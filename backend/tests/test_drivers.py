@@ -363,6 +363,48 @@ class TestSwitchRestore:
         assert "restricted basic CLI" in msg
         assert "Access L3 license" in msg
 
+    def test_tftp_path_test_doubled_prompt_probe(self, monkeypatch):
+        """Regression: XS1930 prints the prompt TWICE after a '?' listing.
+
+        The doubled prompt (`XS1930# XS1930# `) can make the prompt-wait time
+        out; the probe must still diagnose from the listing text it received.
+        """
+        from app.devices.transport import TimeoutError_
+
+        class DoubledPromptFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
+                if cmd == "?":
+                    # exact behavior observed on the real unlicensed
+                    # XS1930-12HP: listing, then the prompt printed twice
+                    # (DECSC escapes stripped by the transport layer)
+                    raise TimeoutError_(
+                        "Timed out waiting for prompt; last output: "
+                        "' Service register\\r\\n show Show system information\\r\\n"
+                        " traceroute Exec traceroute\\r\\n traceroute6 Exec IPv6 "
+                        "traceroute\\r\\nXS1930# XS1930# '"
+                    )
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: DoubledPromptFake()
+        d.connect()
+        ok, msg = d.test_tftp_path()
+        assert not ok
+        assert "switch refused" in msg
+        # diagnosis extracted from the timed-out probe's partial output
+        assert "restricted basic CLI" in msg
+        assert "Access L3 license" in msg
+
     def test_tftp_path_test_partial_copy_support(self, monkeypatch):
         """Device has some `copy` subcommands but rejects the TFTP one."""
 

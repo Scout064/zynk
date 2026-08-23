@@ -14,13 +14,25 @@ from app.devices.tftp import (
     random_filename,
     tftp_lock,
 )
-from app.devices.transport import DriverError, OperationFailedError, UnreachableError
+from app.devices.transport import (
+    DriverError,
+    OperationFailedError,
+    TimeoutError_,
+    UnreachableError,
+)
 
 log = logging.getLogger("zynk.drivers")
 
 # New-generation Ethernet switch CLI (XS1930 / CX4800 style): prompts look
 # like `sysname>` (exec) or `sysname#` (enable) or `sysname(config)#`.
-SWITCH_PROMPT_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\([^)]*\))?[>#][ ]*$", re.MULTILINE)
+# After `?` listings the XS1930 prints the prompt TWICE on one line
+# (`XS1930# XS1930# `), so allow a prompt to be followed by another prompt
+# on the same line as well as line-anchored.
+_PROMPT_TOKEN = r"[A-Za-z0-9._-]+(?:\([^)]*\))?[>#][ ]*"
+SWITCH_PROMPT_RE = re.compile(
+    rf"(?:^|\s)(?P<prompt>{_PROMPT_TOKEN})" rf"(?:\n|$|(?={_PROMPT_TOKEN}))",
+    re.MULTILINE,
+)
 
 # USG FLEX H firewalls: `hostname>` and nested `hostname running config#`.
 FIREWALL_PROMPT_RE = re.compile(r"^[A-Za-z0-9._-]+(?: running [a-z ]*)?[>#][ ]*$", re.MULTILINE)
@@ -117,24 +129,39 @@ class ZyxelSwitchDriver(ZyxelDriver):
         CLI — full CLI configuration (incl. copy tftp config) requires the
         Access L3 license (guide §1.1, Table 4).
         """
-        kw = re.compile(r"tftp|\bcopy\b|backup|restore|import|upload|download", re.IGNORECASE)
         out = ""
-        help_err = None
+        timeout_err = None
         try:
-            out = self.run("?", timeout=60)
+            out = self.run("?", timeout=30)
+        except TimeoutError_ as err:
+            # The XS1930 doubles its prompt after a `?` listing
+            # (`prompt# prompt# `) which may not match cleanly — but the
+            # listing itself arrived; parse what we got.
+            timeout_err = err
+            out = getattr(err, "message", "")
+            out = out.rsplit("last output:", 1)[-1].strip().strip("'")
         except DriverError as err:
-            help_err = err
-        if help_err is not None or not out.strip():
-            return f"(probe with '?' failed: {help_err or 'empty output'})"
-        has_copy = re.search(r"\bcopy\b", out, re.IGNORECASE)
-        if not has_copy and re.search(r"\b(import|reload|show)\b", out, re.IGNORECASE):
-            return (
-                "restricted basic CLI detected — no 'copy' command at all. The XS1930 "
-                "series ships with a restricted basic CLI; full CLI configuration "
-                "(incl. copy tftp config) requires the Access L3 license from Zyxel "
-                "(myzyxel.com, CLI guide §1.1). Config pull works, config restore "
-                "does not. GS1350/CX4800 series have the full CLI without a license."
-            )
+            return f"(probe with '?' failed: {err})"
+        if not out.strip():
+            return f"(probe with '?' failed: {timeout_err or 'empty output'})"
+
+        def diagnose(text: str) -> str | None:
+            has_copy = re.search(r"\bcopy\b", text, re.IGNORECASE)
+            if not has_copy and re.search(r"\b(import|reload|show)\b", text, re.IGNORECASE):
+                return (
+                    "restricted basic CLI detected — no 'copy' command at all. The "
+                    "XS1930 series ships with a restricted basic CLI; full CLI "
+                    "configuration (incl. copy tftp config) requires the Access L3 "
+                    "license from Zyxel (myzyxel.com, CLI guide §1.1). Config pull "
+                    "works, config restore does not. GS1350/CX4800 series have the "
+                    "full CLI without a license."
+                )
+            return None
+
+        diagnosis = diagnose(out)
+        if diagnosis:
+            return diagnosis
+        kw = re.compile(r"tftp|\bcopy\b|backup|restore|import|upload|download", re.IGNORECASE)
         lines = [ln.strip() for ln in out.splitlines() if kw.search(ln) and ln.strip()]
         if lines:
             return "; ".join(lines[:20])
