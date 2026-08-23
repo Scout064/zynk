@@ -1,0 +1,74 @@
+# ============================================================
+# Copyrighted vendor documentation — NEVER commit
+# (Zyxel CLI reference guides; keep local only)
+# ============================================================
+CLI-GUIDE/
+
+# ============================================================
+# Agent / AI assistant artifacts — NEVER commit
+# (project charter, agent rules, local agent state)
+# ============================================================
+AGENTS.md
+AGENT.md
+CLAUDE.md
+GEMINI.md
+opencode.json
+opencode.jsonc
+.opencode/
+.claude/
+.cursor/
+.aider*
+.continue/
+.windsurf/
+.agent/
+agents/
+
+# ============================================================
+# Python (backend)
+# ============================================================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+
+# ============================================================
+# Node (frontend)
+# ============================================================
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+*.local
+
+# ============================================================
+# Runtime data & REAL test artifacts — NEVER commit
+# (sqlite db, per-device git config repo, auto-generated keys;
+#  contains actual device configs and encrypted credentials)
+# ============================================================
+data/
+
+# ============================================================
+# Secrets / environment
+# ============================================================
+.env
+.env.*
+*.key
+
+# ============================================================
+# Editors / OS / logs
+# ============================================================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.log
+logs/

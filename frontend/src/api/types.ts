@@ -1,0 +1,63 @@
+export type Family = "switch" | "firewall" | "ap";
+
+export interface Device {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  family: Family;
+  model: string;
+  username: string;
+  tags: string[];
+  enabled: boolean;
+  notes: string;
+  snapshot_count: number;
+  last_snapshot_ts: string | null;
+  status: { reachable: boolean; latency_ms: number | null; last_checked: string } | null;
+}
+
+export interface Snapshot {
+  id: string;
+  device_id: string;
+  ts: string;
+  source: string;
+  config_hash: string;
+  size_bytes: number;
+  git_commit: string | null;
+  message: string;
+}
+
+export interface Schedule {
+  id: string;
+  name: string;
+  cron: string;
+  scope: "all" | "devices" | "tags";
+  targets: string[];
+  enabled: boolean;
+  last_run: string | null;
+  next_run: string | null;
+}
+
+export interface StatusSummary {
+  online: number;
+  offline: number;
+  devices: {
+    device_id: string;
+    name: string;
+    family: Family;
+    enabled: boolean;
+    reachable: boolean | null;
+    latency_ms: number | null;
+    last_checked: string | null;
+  }[];
+}
+
+export interface AuditEntry {
+  id: string;
+  ts: string;
+  actor: string;
+  action: string;
+  target: string;
+  detail: string;
+  ok: boolean;
+}

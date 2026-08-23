@@ -1,0 +1,15 @@
+services:
+  zynk:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: zynk
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/data
+    environment:
+      # Choose the initial admin password (created on first start only)
+      ZYNK_INITIAL_ADMIN_PASSWORD: "change-me-now"
+      ZYNK_STATUS_POLL_INTERVAL_SECONDS: "60"
