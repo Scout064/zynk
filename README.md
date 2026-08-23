@@ -33,6 +33,12 @@ SSH sessions; verify against your real hardware before relying on it.
 > applied with `reload config 1`, a warm reboot. If the restored config changes
 > the management IP, update the device entry afterwards. In Docker, publish
 > `69/udp` and set `ZYNK_TFTP_PUBLIC_ADDRESS` to the host's LAN IP.
+>
+> ⚠ **XS1930 license restriction:** the XS1930 series ships with a restricted
+> *basic* CLI (config pull works, but `copy tftp config` is unavailable).
+> Switch **revert requires the Access L3 license** from Zyxel (myzyxel.com) to
+> unlock full CLI configuration. Other switch series (e.g. GS1350, CX4800) have
+> the full CLI without a license.
 
 > ⚠ **End of Life:** ZLD-based devices (USG & ATP series) are in End-of-Life
 > state at Zyxel — no further firmware updates or support. They remain

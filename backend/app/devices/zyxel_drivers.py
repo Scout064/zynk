@@ -107,6 +107,37 @@ class ZyxelSwitchDriver(ZyxelDriver):
             "reload — verify it rebooted with the restored configuration."
         )
 
+    def _probe_backup_commands(self) -> str:
+        """Ask the switch which backup/TFTP commands its firmware actually has.
+
+        Runs the documented `help` command (enable mode) — read-only — and
+        returns the matching command lines. Used when the documented `copy`
+        syntax is rejected, which happens when the XS1930 series runs the
+        restricted basic CLI (full CLI configuration requires the Access L3
+        license — see guide §1.1/Table 4).
+        """
+        kw = re.compile(r"tftp|\bcopy\b|backup|restore|import|upload|download", re.IGNORECASE)
+        try:
+            out = self.run("help", timeout=60)
+        except DriverError as err:
+            return f"(help probe failed: {err})"
+        lines = [ln.strip() for ln in out.splitlines() if kw.search(ln) and ln.strip()]
+        if lines:
+            return "; ".join(lines[:20])
+        # Basic CLI detected: no copy/tftp/import at all in enable mode
+        if "import" in out.lower() or "reload" in out.lower():
+            return (
+                "basic CLI detected — no TFTP/backup commands. The XS1930 series "
+                "ships with a restricted CLI; full CLI configuration (incl. "
+                "copy tftp config) requires the Access L3 license from Zyxel "
+                "(see CLI guide §1.1). Config pull works, config restore does not."
+            )
+        raw = [ln.strip() for ln in out.splitlines() if ln.strip()][:8]
+        return (
+            "no tftp/copy/backup/restore commands in help; first lines of help "
+            f"output: {'; '.join(raw) if raw else '(empty)'}"
+        )
+
     def apply_config(self, config_text: str) -> str:
         """Restore a snapshot: TFTP staging into config slot 1 + reload config 1.
 
@@ -132,8 +163,11 @@ class ZyxelSwitchDriver(ZyxelDriver):
             try:
                 out = self.run(f"copy tftp config 1 {tftp_addr} {filename}", timeout=180)
                 if self.TFTP_ERROR_RE.search(out):
+                    probe = self._probe_backup_commands()
                     raise OperationFailedError(
-                        f"Switch rejected the TFTP restore: {out.strip()!r}"
+                        f"Switch rejected the TFTP restore: {out.strip()!r}. "
+                        f"This firmware may not support the documented copy syntax; "
+                        f"available backup/TFTP commands: {probe}"
                     )
                 if not server.wait(timeout=180):
                     raise OperationFailedError(
@@ -183,11 +217,14 @@ class ZyxelSwitchDriver(ZyxelDriver):
             except TFTPError as err:
                 return False, str(err)
             try:
-                out = self.run(
-                    f"copy running-config tftp {tftp_addr} {filename}", timeout=90
-                )
+                out = self.run(f"copy running-config tftp {tftp_addr} {filename}", timeout=90)
                 if self.TFTP_ERROR_RE.search(out):
-                    return False, f"switch refused: {out.strip()!r}"
+                    probe = self._probe_backup_commands()
+                    return False, (
+                        f"switch refused: {out.strip()!r}. This firmware may not "
+                        f"support the documented copy syntax; available "
+                        f"backup/TFTP commands: {probe}"
+                    )
                 if not recv.wait(timeout=90):
                     return False, f"{recv.error}; switch CLI output: {out.strip()!r}"
             finally:

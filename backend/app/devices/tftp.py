@@ -185,9 +185,7 @@ class SingleFileTFTPServer(_TFTPBase):
         try:
             if blksize != DEFAULT_BLOCKSIZE:
                 # OACK with the negotiated block size; client replies ACK(0)
-                session.sendto(
-                    struct.pack("!H", 6) + f"blksize\x00{blksize}\x00".encode(), addr
-                )
+                session.sendto(struct.pack("!H", 6) + f"blksize\x00{blksize}\x00".encode(), addr)
                 if not self._await_ack(session, addr, 0):
                     self._error = "client did not ACK the blksize negotiation"
                     return
@@ -203,16 +201,12 @@ class SingleFileTFTPServer(_TFTPBase):
                         sent = True
                         break
                 if not sent:
-                    self._error = (
-                        f"TFTP transfer stalled at block {block} (no ACK from {addr[0]})"
-                    )
+                    self._error = f"TFTP transfer stalled at block {block} (no ACK from {addr[0]})"
                     return
                 offset += blksize
                 block += 1
                 if len(chunk) < blksize:
-                    log.info(
-                        "TFTP transfer to %s complete (%d bytes)", addr[0], len(self.data)
-                    )
+                    log.info("TFTP transfer to %s complete (%d bytes)", addr[0], len(self.data))
                     return  # final block sent and acknowledged
         finally:
             session.close()
@@ -323,9 +317,7 @@ class TFTPReceiveServer(_TFTPBase):
         received = bytearray()
         try:
             if blksize != DEFAULT_BLOCKSIZE:
-                session.sendto(
-                    struct.pack("!H", 6) + f"blksize\x00{blksize}\x00".encode(), addr
-                )
+                session.sendto(struct.pack("!H", 6) + f"blksize\x00{blksize}\x00".encode(), addr)
             else:
                 session.sendto(struct.pack("!HH", 4, 0), addr)  # plain ACK(0)
 

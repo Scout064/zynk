@@ -236,18 +236,14 @@ class TestSwitchRestore:
                     return f"{cmd}\r\nConfiguration file transfer initiated.\r\nsysname# "
                 return super().read_until(pattern, timeout)
 
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg"
-        )
+        monkeypatch.setattr("app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg")
         # force a short idle timeout so the test fails fast
         real_server = SingleFileTFTPServer
 
         def fast_server(data, filename, **kw):
             return real_server(data, filename, idle_timeout=0.5, **kw)
 
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.SingleFileTFTPServer", fast_server
-        )
+        monkeypatch.setattr("app.devices.zyxel_drivers.SingleFileTFTPServer", fast_server)
         spec = ConnectionSpec(
             host="127.0.0.1",
             port=22,
@@ -275,9 +271,7 @@ class TestSwitchRestore:
                     return f"{cmd}\r\nCan not open TFTP connection\r\nsysname# "
                 return super().read_until(pattern, timeout)
 
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg"
-        )
+        monkeypatch.setattr("app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg")
         spec = ConnectionSpec(
             host="127.0.0.1",
             port=22,
@@ -314,9 +308,7 @@ class TestSwitchRestore:
 
             return R(filename, **kwargs)
 
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.TFTPReceiveServer", fake_receiver
-        )
+        monkeypatch.setattr("app.devices.zyxel_drivers.TFTPReceiveServer", fake_receiver)
         spec = ConnectionSpec(
             host="127.0.0.1",
             port=22,
@@ -331,16 +323,20 @@ class TestSwitchRestore:
         ok, msg = d.test_tftp_path()
         assert ok, msg
         assert "TFTP path OK" in msg
-        assert any(
-            s.startswith("copy running-config tftp 127.0.0.1") for s in d.transport.sent
-        )
+        assert any(s.startswith("copy running-config tftp 127.0.0.1") for s in d.transport.sent)
 
     def test_tftp_path_test_refused(self, monkeypatch):
         class RefuseFake(FakeTransport):
             def read_until(self, pattern, timeout: float = 60.0):
                 cmd = self.sent[-1] if self.sent else ""
                 if cmd.startswith("copy running-config tftp"):
-                    return f"{cmd}\r\nCan not open TFTP connection\r\nsysname# "
+                    return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
+                if cmd == "help":
+                    return (
+                        "help\r\n  Commands available:\r\n  help\r\n  exit\r\n"
+                        "  copy running-config custom-default\r\n  backup config tftp\r\n"
+                        "  restore config tftp\r\n  show running-config\r\nsysname# "
+                    )
                 return super().read_until(pattern, timeout)
 
         spec = ConnectionSpec(
@@ -356,7 +352,10 @@ class TestSwitchRestore:
         ok, msg = d.test_tftp_path()
         assert not ok
         assert "switch refused" in msg
-        assert "Can not open TFTP connection" in msg
+        assert "%Invalid command" in msg
+        # the help probe output must surface the firmware's real commands
+        assert "backup config tftp" in msg
+        assert "restore config tftp" in msg
 
 
 class TestFirewallDriver:
