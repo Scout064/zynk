@@ -127,8 +127,16 @@ export default function Devices() {
   async function onTest(d: Device) {
     setTestResult((r) => ({ ...r, [d.id]: "testing…" }));
     try {
-      const res = await api.post<{ ok: boolean; message: string }>(`/api/devices/${d.id}/test`);
-      setTestResult((r) => ({ ...r, [d.id]: res.message }));
+      const res = await api.post<{
+        ok: boolean;
+        message: string;
+        tftp?: { ok: boolean; message: string } | null;
+      }>(`/api/devices/${d.id}/test`);
+      let text = res.message;
+      if (res.tftp) {
+        text += ` — ${res.tftp.message}`;
+      }
+      setTestResult((r) => ({ ...r, [d.id]: text }));
     } catch (err) {
       setTestResult((r) => ({ ...r, [d.id]: err instanceof ApiError ? err.message : "failed" }));
     }

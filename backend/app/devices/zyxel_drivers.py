@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import ftplib
 import io
+import logging
 import os
 import re
 
 from app.devices.base import ZyxelDriver
-from app.devices.tftp import SingleFileTFTPServer, random_filename, tftp_lock
+from app.devices.tftp import (
+    SingleFileTFTPServer,
+    TFTPError,
+    TFTPReceiveServer,
+    random_filename,
+    tftp_lock,
+)
 from app.devices.transport import DriverError, OperationFailedError, UnreachableError
+
+log = logging.getLogger("zynk.drivers")
 
 # New-generation Ethernet switch CLI (XS1930 / CX4800 style): prompts look
 # like `sysname>` (exec) or `sysname#` (enable) or `sysname(config)#`.
@@ -39,8 +48,11 @@ class ZyxelSwitchDriver(ZyxelDriver):
     family = "switch"
     prompt_re = SWITCH_PROMPT_RE
     RELOAD_CONFIRM_RE = re.compile(r"\[y/N\]\s*$", re.IGNORECASE)
+    # Broad CLI-failure detection: Zyxel phrasings vary across firmware
+    # ("Can not", "Illegal parameter", "Invalid input", "TFTP fail", ...).
     TFTP_ERROR_RE = re.compile(
-        r"(error|fail|can'?t|cannot|timed?\s*out|unreachable|too long|not\s+found)",
+        r"error|fail|can\s*not|can'?t|timed?\s*out|unreach|too long|not found|"
+        r"illegal|invalid|denied|refused|no such|not exist",
         re.IGNORECASE,
     )
 
@@ -102,23 +114,32 @@ class ZyxelSwitchDriver(ZyxelDriver):
         """
         tftp_addr = self._tftp_address()
         filename = random_filename()
+        log.info(
+            "switch restore %s: serving %s via TFTP from %s (port %d)",
+            self.spec.host,
+            filename,
+            tftp_addr,
+            self.spec.tftp_port,
+        )
         server = SingleFileTFTPServer(
             config_text.encode("utf-8"), filename, port=self.spec.tftp_port
         )
         with tftp_lock:
             try:
                 server.start()
-            except Exception as err:
+            except TFTPError as err:
                 raise OperationFailedError(str(err)) from err
             try:
-                out = self.run(
-                    f"copy tftp config 1 {tftp_addr} {filename}",
-                    timeout=180,
-                )
+                out = self.run(f"copy tftp config 1 {tftp_addr} {filename}", timeout=180)
                 if self.TFTP_ERROR_RE.search(out):
-                    raise OperationFailedError(f"Switch rejected the TFTP restore: {out.strip()}")
+                    raise OperationFailedError(
+                        f"Switch rejected the TFTP restore: {out.strip()!r}"
+                    )
                 if not server.wait(timeout=180):
-                    raise OperationFailedError(f"TFTP transfer failed: {server.error}")
+                    raise OperationFailedError(
+                        f"TFTP transfer failed: {server.error}. "
+                        f"Switch CLI output was: {out.strip()!r}"
+                    )
             finally:
                 server.stop()
             import time as _time
@@ -139,6 +160,45 @@ class ZyxelSwitchDriver(ZyxelDriver):
 
         self._wait_for_reboot()
         return out
+
+    def test_tftp_path(self) -> tuple[bool, str]:
+        """Verify the device can reach us on UDP 69 (TFTP) end to end.
+
+        Runs the documented backup command `copy running-config tftp <ip> <file>`
+        so the switch pushes its running config to a throwaway in-memory
+        receiver. Nothing on the switch is modified.
+        """
+        tftp_addr = self._tftp_address()
+        filename = f"zynktest{os.urandom(2).hex()}.cfg"
+        log.info(
+            "TFTP path test %s: expecting upload %s to %s",
+            self.spec.host,
+            filename,
+            tftp_addr,
+        )
+        recv = TFTPReceiveServer(filename, port=self.spec.tftp_port, idle_timeout=30.0)
+        with tftp_lock:
+            try:
+                recv.start()
+            except TFTPError as err:
+                return False, str(err)
+            try:
+                out = self.run(
+                    f"copy running-config tftp {tftp_addr} {filename}", timeout=90
+                )
+                if self.TFTP_ERROR_RE.search(out):
+                    return False, f"switch refused: {out.strip()!r}"
+                if not recv.wait(timeout=90):
+                    return False, f"{recv.error}; switch CLI output: {out.strip()!r}"
+            finally:
+                recv.stop()
+        size = len(recv.data or b"")
+        if size == 0:
+            return False, "upload completed but was empty"
+        return True, (
+            f"TFTP path OK — switch pushed {size} bytes "
+            f"to {tftp_addr}:{self.spec.tftp_port}/udp"
+        )
 
 
 class ZyxelFirewallDriver(ZyxelDriver):

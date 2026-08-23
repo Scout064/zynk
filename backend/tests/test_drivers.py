@@ -7,6 +7,7 @@ import pytest
 
 from app.devices.base import ConnectionSpec
 from app.devices.factory import make_driver
+from app.devices.tftp import SingleFileTFTPServer
 from app.devices.transport import (
     DriverError,
     OperationFailedError,
@@ -223,6 +224,139 @@ class TestSwitchRestore:
         d.connect()
         with pytest.raises(OperationFailedError, match="rejected the TFTP restore"):
             d.apply_config(SWITCH_CONFIG)
+
+    def test_no_request_error_includes_cli_output(self, monkeypatch):
+        """The 'no TFTP request' error must include what the switch CLI said."""
+
+        class SilentFailFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy tftp config"):
+                    # benign-looking output that matches no error keyword
+                    return f"{cmd}\r\nConfiguration file transfer initiated.\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg"
+        )
+        # force a short idle timeout so the test fails fast
+        real_server = SingleFileTFTPServer
+
+        def fast_server(data, filename, **kw):
+            return real_server(data, filename, idle_timeout=0.5, **kw)
+
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.SingleFileTFTPServer", fast_server
+        )
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=0,  # ephemeral port nothing will reach -> no request
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: SilentFailFake()
+        d.connect()
+        with pytest.raises(OperationFailedError) as exc:
+            d.apply_config(SWITCH_CONFIG)
+        msg = str(exc.value)
+        assert "no TFTP request arrived" in msg
+        # the CLI output we previously discarded must now be visible
+        assert "Configuration file transfer initiated." in msg
+
+    def test_can_not_phrasing_is_detected(self, monkeypatch):
+        """Zyxel's two-word 'Can not' failure phrasing must be caught."""
+
+        class CanNotFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy tftp config"):
+                    return f"{cmd}\r\nCan not open TFTP connection\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg"
+        )
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=0,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: CanNotFake()
+        d.connect()
+        with pytest.raises(OperationFailedError, match="rejected the TFTP restore"):
+            d.apply_config(SWITCH_CONFIG)
+
+    def test_tftp_path_test_success(self, monkeypatch):
+        """test_tftp_path: switch pushes config to our WRQ receiver."""
+        from app.devices.tftp import TFTPReceiveServer
+
+        class PushFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    # simulate: switch uploads, then prints success
+                    return f"{cmd}\r\nTransfer success.\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        def fake_receiver(filename: str, **kwargs):
+            class R(TFTPReceiveServer):
+                def __init__(self, fn, **kw):
+                    super().__init__(fn, **kw)
+                    self._received = bytearray(b"pushed-config-bytes")
+
+                def wait(self, timeout: float = 60.0):
+                    return True
+
+            return R(filename, **kwargs)
+
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.TFTPReceiveServer", fake_receiver
+        )
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: PushFake()
+        d.connect()
+
+        ok, msg = d.test_tftp_path()
+        assert ok, msg
+        assert "TFTP path OK" in msg
+        assert any(
+            s.startswith("copy running-config tftp 127.0.0.1") for s in d.transport.sent
+        )
+
+    def test_tftp_path_test_refused(self, monkeypatch):
+        class RefuseFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    return f"{cmd}\r\nCan not open TFTP connection\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: RefuseFake()
+        d.connect()
+        ok, msg = d.test_tftp_path()
+        assert not ok
+        assert "switch refused" in msg
+        assert "Can not open TFTP connection" in msg
 
 
 class TestFirewallDriver:
