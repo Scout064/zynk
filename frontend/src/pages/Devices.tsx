@@ -7,9 +7,16 @@ import { PageHeader } from "../components/Layout";
 
 const FAMILY_LABEL: Record<Family, string> = {
   switch: "Switch (GS/XGS/XS/CX)",
-  firewall: "Firewall (USG/ATP/FLEX)",
+  firewall: "Firewall (USG FLEX H, uOS)",
+  zld_firewall: "Firewall (USG/ATP, ZLD) — End of Life",
   ap: "Access Point (NWA/WAX/WBE)",
 };
+
+export function familyBadgeTone(family: Family): "indigo" | "amber" | "green" | "red" {
+  if (family === "switch") return "indigo";
+  if (family === "firewall" || family === "zld_firewall") return "amber";
+  return "green";
+}
 
 interface FormState {
   name: string;
@@ -263,8 +270,8 @@ export default function Devices() {
                     )}
                   </td>
                   <td className="px-5 py-3">
-                    <Badge tone={d.family === "switch" ? "indigo" : d.family === "firewall" ? "amber" : "green"}>
-                      {d.family}
+                    <Badge tone={familyBadgeTone(d.family)}>
+                      {d.family === "zld_firewall" ? "firewall (ZLD, EOL)" : d.family}
                     </Badge>
                   </td>
                   <td className="px-5 py-3">{d.snapshot_count}</td>

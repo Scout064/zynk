@@ -5,6 +5,14 @@ import type { AuditEntry, StatusSummary } from "../api/types";
 import { Badge, Card, EmptyState, Spinner, StatusDot } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 
+function ageLabel(iso: string | null): string {
+  if (!iso) return "never checked";
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ago`;
+}
+
 export default function Dashboard() {
   const [summary, setSummary] = useState<StatusSummary | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
@@ -33,6 +41,8 @@ export default function Dashboard() {
       </div>
     );
   }
+
+  const intervalMin = summary ? Math.round(summary.interval_seconds / 60) : 5;
 
   const stats = [
     { label: "Devices", value: summary?.devices.length ?? 0, tone: "text-zinc-100" },
@@ -70,7 +80,8 @@ export default function Dashboard() {
                       {d.name}
                     </Link>
                     <p className="truncate text-xs text-zinc-500">
-                      {d.family} · {d.enabled ? "enabled" : "disabled"}
+                      {d.family} · {d.enabled ? "enabled" : "disabled"} · checked{" "}
+                      {ageLabel(d.last_checked)}
                     </p>
                   </div>
                   {d.latency_ms !== null && d.reachable && (
@@ -85,6 +96,10 @@ export default function Dashboard() {
               hint="Add your first Zyxel device to start backing up configurations."
             />
           )}
+          <p className="border-t border-zinc-800 px-5 py-2.5 text-xs text-zinc-500">
+            Status is probed automatically every {intervalMin} minute{intervalMin === 1 ? "" : "s"}
+            ; each device keeps its last known state until the next check.
+          </p>
         </Card>
 
         <Card>

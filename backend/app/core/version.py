@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "Zynk"
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 LICENSE = "MIT"
 REPOSITORY = "https://github.com/Scout064/zynk"
 
@@ -14,6 +14,7 @@ SUPPORTED_FAMILIES = [
         "config_pull": "show running-config",
         "revert_supported": False,
         "revert_note": "not in alpha (needs TFTP + reload)",
+        "eol": False,
     },
     {
         "family": "firewall",
@@ -23,6 +24,17 @@ SUPPORTED_FAMILIES = [
         "config_pull": "show config running | no-pager",
         "revert_supported": False,
         "revert_note": "not in alpha (needs file staged on device)",
+        "eol": False,
+    },
+    {
+        "family": "zld_firewall",
+        "label": "Firewalls (ZLD)",
+        "platform": "ZLD",
+        "verified_models": "ATP800, USG ZyWALL",
+        "config_pull": "show running-config",
+        "revert_supported": True,
+        "revert_note": "FTP upload + apply /conf/<file> ignore-error rollback + write",
+        "eol": True,
     },
     {
         "family": "ap",
@@ -32,5 +44,6 @@ SUPPORTED_FAMILIES = [
         "config_pull": "show running-config",
         "revert_supported": True,
         "revert_note": "FTP upload + apply running-config + write",
+        "eol": False,
     },
 ]

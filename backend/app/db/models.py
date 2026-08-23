@@ -22,7 +22,8 @@ class Base(DeclarativeBase):
 
 class DeviceFamily(enum.StrEnum):
     SWITCH = "switch"
-    FIREWALL = "firewall"
+    FIREWALL = "firewall"  # uOS based (USG FLEX H series)
+    ZLD_FIREWALL = "zld_firewall"  # ZLD based (USG/ATP) — End of Life
     AP = "ap"
 
 

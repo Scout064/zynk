@@ -18,6 +18,10 @@ FIREWALL_PROMPT_RE = re.compile(r"^[A-Za-z0-9._-]+(?: running [a-z ]*)?[>#][ ]*$
 # NWA/WAX/WBE access points: `Router>`, `Router#`, `Router(config)#`.
 AP_PROMPT_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\([^)]*\))?[>#][ ]*$", re.MULTILINE)
 
+# ZLD firewalls (ATP / USG ZyWALL): `Router>`, `Router#`, `Router(config)#`
+# and sub-modes like `Router(zone)#`, `Router(config-if-ge)#`.
+ZLD_PROMPT_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\([^)]*\))?[>#][ ]*$", re.MULTILINE)
+
 
 class ZyxelSwitchDriver(ZyxelDriver):
     """XS1930-12HP / CX4800-56F (and similar new-gen switches).
@@ -52,7 +56,7 @@ class ZyxelSwitchDriver(ZyxelDriver):
 
 
 class ZyxelFirewallDriver(ZyxelDriver):
-    """USG FLEX 700H (ZLD-style CLI).
+    """USG FLEX 700H (uOS CLI).
 
     Full running config via `show config running | no-pager`; pager disabled
     session-wide with `cliconfig pager enabled false`.
@@ -79,6 +83,68 @@ class ZyxelFirewallDriver(ZyxelDriver):
             "Firewall config revert requires staging the file on the device "
             "(cmd config-apply) and is not enabled in this alpha"
         )
+
+
+class ZyxelZLDFirewallDriver(ZyxelDriver):
+    """ATP / USG ZyWALL firewalls (ZLD CLI, e.g. ATP800).
+
+    NOTE: ZLD-based devices (USG & ATP series) are END OF LIFE at Zyxel —
+    no new firmware or support. Supported for existing installations only.
+
+    Config via `show running-config` at the privilege prompt. Revert: FTP
+    upload to /conf/ then `apply /conf/<file> ignore-error rollback` + `write`
+    (single-line command per the ZLD CLI guide, unlike the AP's continuation
+    line form). No pager commands are documented for ZLD.
+    """
+
+    family = "zld_firewall"
+    prompt_re = ZLD_PROMPT_RE
+
+    def _disable_pager(self) -> None:
+        return
+
+    def _ensure_enable(self) -> None:
+        if self.base_prompt.endswith("#"):
+            return
+        self.transport.sendline("enable")
+        text = self.transport.read_until(self.prompt_re, timeout=15)
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        self.base_prompt = lines[-1] if lines else self.base_prompt
+        if not self.base_prompt.endswith("#"):
+            raise DriverError("Could not enter enable mode on ZLD firewall")
+
+    def get_config(self) -> str:
+        self._ensure_enable()
+        out = self.run("show running-config")
+        if not out.strip():
+            raise DriverError("Device returned an empty configuration")
+        return out
+
+    def check_alive(self) -> bool:
+        out = self.run("show version", timeout=30)
+        return bool(out.strip())
+
+    def apply_config(self, config_text: str) -> str:
+        """Push a snapshot back: FTP upload + apply (ignore-error rollback) + write."""
+        self._ensure_enable()
+        remote_name = f"zynk_restore_{os.urandom(4).hex()}.conf"
+        try:
+            ftp = ftplib.FTP(timeout=30)
+            ftp.connect(self.spec.host, 21)
+            ftp.login(self.spec.username, self.spec.password)
+            ftp.set_pasv(True)
+            data = config_text.encode("utf-8")
+            ftp.storbinary(f"STOR /conf/{remote_name}", io.BytesIO(data))
+            ftp.quit()
+        except (ftplib.all_errors, OSError) as err:
+            raise OperationFailedError(
+                f"Could not upload config to ZLD firewall (FTP must be enabled on the "
+                f"device): {err}"
+            ) from err
+
+        out = self.run(f"apply /conf/{remote_name} ignore-error rollback", timeout=300)
+        self.run("write", timeout=60)
+        return out
 
 
 class ZyxelAPDriver(ZyxelDriver):

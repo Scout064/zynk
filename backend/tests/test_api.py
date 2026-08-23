@@ -155,19 +155,27 @@ class TestAbout:
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "Zynk"
-        assert data["version"] == "0.2.1"
+        assert data["version"] == "0.3.0"
         assert data["license"] == "MIT"
         assert data["repository"].startswith("https://github.com/")
         assert data["stats"]["devices"] == 1
         assert data["stats"]["snapshots"] == 0
-        assert {f["family"] for f in data["families"]} == {"switch", "firewall", "ap"}
+        assert {f["family"] for f in data["families"]} == {
+            "switch",
+            "firewall",
+            "zld_firewall",
+            "ap",
+        }
+        zld = next(f for f in data["families"] if f["family"] == "zld_firewall")
+        assert zld["eol"] is True
+        assert zld["revert_supported"] is True
         assert data["started_at"] is not None
         assert data["uptime_seconds"] is not None
 
     def test_health_includes_version(self, client: TestClient):
         resp = client.get("/api/health")
         assert resp.status_code == 200
-        assert resp.json()["version"] == "0.2.1"
+        assert resp.json()["version"] == "0.3.0"
 
 
 class TestStatusAndAudit:
@@ -177,6 +185,41 @@ class TestStatusAndAudit:
         data = resp.json()
         assert data["devices"][0]["name"] == "edge-sw"
         assert data["devices"][0]["reachable"] is None
+        assert data["devices"][0]["last_checked"] is None  # never checked
+        assert data["interval_seconds"] == 300  # 5-minute default
+
+    def test_status_persists_until_next_check(self, client: TestClient, auth_headers):
+        """Device keeps last known state between polls (no reset when not probed)."""
+        import socket
+
+        device_id = make_device_row("stale-sw")
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        try:
+            db = session_scope()
+            try:
+                from app.db.models import Device
+
+                dev = db.get(Device, device_id)
+                dev.host = "127.0.0.1"
+                dev.port = port
+                db.commit()
+            finally:
+                db.close()
+            r1 = client.post(f"/api/devices/{device_id}/check", headers=auth_headers)
+            assert r1.json()["reachable"] is True
+        finally:
+            srv.close()
+        # Port now closed, but WITHOUT a new check the old state must persist
+        data = client.get("/api/status", headers=auth_headers).json()
+        entry = next(d for d in data["devices"] if d["device_id"] == device_id)
+        assert entry["reachable"] is True
+        assert entry["last_checked"] is not None
+        # After an actual check it flips to offline
+        r2 = client.post(f"/api/devices/{device_id}/check", headers=auth_headers)
+        assert r2.json()["reachable"] is False
 
     def test_audit_log_records_logins(self, client: TestClient, auth_headers):
         resp = client.get("/api/audit", headers=auth_headers)

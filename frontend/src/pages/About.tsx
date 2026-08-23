@@ -151,6 +151,7 @@ export default function About() {
               <th className="px-5 py-3">Verified models</th>
               <th className="px-5 py-3">Config pull</th>
               <th className="px-5 py-3">Revert</th>
+              <th className="px-5 py-3">Status</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-800/70">
@@ -169,10 +170,25 @@ export default function About() {
                     <Badge tone="amber">{f.revert_note}</Badge>
                   )}
                 </td>
+                <td className="px-5 py-3">
+                  {f.eol ? (
+                    <Badge tone="red">End of Life</Badge>
+                  ) : (
+                    <Badge tone="green">active</Badge>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+        {info.families.some((f) => f.eol) && (
+          <p className="border-t border-zinc-800 px-5 py-3 text-xs leading-relaxed text-amber-400/90">
+            ⚠ ZLD-based devices (USG &amp; ATP series) are in End-of-Life state at
+            Zyxel — no further firmware updates or support. They remain supported
+            here for existing installations, but plan migration to a current
+            platform (e.g. USG FLEX H / uOS).
+          </p>
+        )}
       </Card>
 
       {/* Stack + links */}

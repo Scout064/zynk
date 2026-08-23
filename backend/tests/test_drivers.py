@@ -127,6 +127,65 @@ class TestFirewallDriver:
         d.close()
 
 
+class TestZLDFirewallDriver:
+    def test_get_config(self):
+        d = make_fake_driver(
+            "zld_firewall",
+            {"show running-config": FIREWALL_CONFIG, "show version": "V4.32"},
+            "Router# ",
+        )
+        d.connect()
+        cfg = d.get_config()
+        assert "vrf main" in cfg
+        assert "show running-config" not in cfg
+        d.close()
+
+    def test_get_config_enters_enable(self):
+        class EnablingFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd == "enable":
+                    return "enable\r\nRouter# "
+                return super().read_until(pattern, timeout)
+
+        def _ft(self):
+            return EnablingFake({"show running-config": FIREWALL_CONFIG}, "Router> ")
+
+        d = make_fake_driver("zld_firewall", {"show running-config": FIREWALL_CONFIG}, "Router> ")
+        d._make_transport = _ft.__get__(d, type(d))
+        d.connect()
+        cfg = d.get_config()
+        assert "vrf main" in cfg
+        assert d.base_prompt.strip().endswith("#")
+
+    def test_apply_config_ftp_and_apply(self, monkeypatch):
+        import ftplib
+
+        d = make_fake_driver("zld_firewall", {}, "Router# ")
+        d.connect()
+        sent: list[str] = []
+        d.run = lambda cmd, timeout=None: (sent.append(cmd), "")[1]
+
+        class FakeFTP:
+            def __init__(self, timeout=None): ...
+            def connect(self, host, port): ...
+            def login(self, u, p): ...
+            def set_pasv(self, v): ...
+            def storbinary(self, cmd, data):
+                sent.append(cmd)
+
+            def quit(self): ...
+
+        monkeypatch.setattr(ftplib, "FTP", FakeFTP)
+        out = d.apply_config("vlan 1\n")
+        assert any("STOR /conf/zynk_restore_" in c for c in sent)
+        assert any(
+            c.startswith("apply /conf/zynk_restore_") and "ignore-error rollback" in c for c in sent
+        )
+        assert "write" in sent
+        assert out == ""
+
+
 class TestAPDriver:
     def test_get_config(self):
         d = make_fake_driver(
@@ -164,6 +223,6 @@ class TestFactory:
             make_driver(ConnectionSpec("x", 22, "u", "p"), "router")
 
     def test_all_families(self):
-        for fam in ("switch", "firewall", "ap"):
+        for fam in ("switch", "firewall", "zld_firewall", "ap"):
             d = make_driver(ConnectionSpec("x", 22, "u", "p"), fam)
             assert d.family == fam

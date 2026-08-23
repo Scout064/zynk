@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     access_token_ttl_minutes: int = 720
-    status_poll_interval_seconds: int = 60
+    status_poll_interval_seconds: int = 300
     ssh_connect_timeout_seconds: int = 15
     ssh_command_timeout_seconds: int = 120
     device_status_history: int = 500

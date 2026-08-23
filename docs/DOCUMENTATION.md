@@ -98,7 +98,7 @@ the working directory is also read).
 | `ZYNK_INITIAL_ADMIN_PASSWORD` | *(random, printed once)* | Password for the `admin` user created on first start |
 | `ZYNK_FORCE_ADMIN_RESET` | `false` | **Dev only:** reset the `admin` password on **every** startup (to `ZYNK_INITIAL_ADMIN_PASSWORD`, or a generated one printed to the log). Escape hatch for a lost local password — never enable in production. |
 | `ZYNK_ACCESS_TOKEN_TTL_MINUTES` | `720` | JWT lifetime (12 h) |
-| `ZYNK_STATUS_POLL_INTERVAL_SECONDS` | `60` | How often device status is probed |
+| `ZYNK_STATUS_POLL_INTERVAL_SECONDS` | `300` | How often device status is probed (every 5 minutes by default) |
 | `ZYNK_SSH_CONNECT_TIMEOUT_SECONDS` | `15` | SSH TCP/banner/auth timeout |
 | `ZYNK_SSH_COMMAND_TIMEOUT_SECONDS` | `120` | Timeout per CLI command (config pulls can be large) |
 
@@ -112,7 +112,8 @@ the working directory is also read).
    ```
    Change the password immediately via `POST /api/auth/change-password` (§6.1).
 2. **Add a device.** Devices → *+ Add Device*. Fill in name, host/IP, SSH port,
-   family (switch / firewall / ap), model, SSH credentials and optional tags.
+   family (switch / firewall / zld_firewall / ap), model, SSH credentials and
+   optional tags.
 3. **Test the connection.** Press *Test* on the device row. This performs a full
    SSH login and runs a harmless show command. Distinct failure reasons
    (auth failed / unreachable / timeout) are displayed.
@@ -126,6 +127,12 @@ the working directory is also read).
 ### Dashboard
 Counts of devices/online/offline, live device list with status dots and latency,
 and the 8 most recent audit events. Refreshes every 30 s.
+
+**Status semantics:** the backend probes every enabled device's SSH port every
+5 minutes (`ZYNK_STATUS_POLL_INTERVAL_SECONDS`, default 300). Status is
+persisted between checks — a device keeps its last known online/offline state
+until the next check completes; the UI shows how long ago each device was last
+checked. Use *Check Status* on the device page for an immediate probe.
 
 ### Devices
 Full inventory table with status, snapshot count, last backup time and actions:
@@ -216,7 +223,8 @@ Expired/invalid tokens yield `401`; the frontend then redirects to the login pag
 }
 ```
 
-`family` must be `switch`, `firewall` or `ap`; `password` is write-only and
+`family` must be `switch`, `firewall`, `zld_firewall` or `ap`; `password` is
+write-only and
 omitted from all responses.
 
 ### 6.3 Configs & snapshots
@@ -276,7 +284,7 @@ an automatic confirmation pull (`post_revert`).
 | Method & Path | Result |
 |---|---|
 | `GET /about` | version, runtime (Python, uptime, started_at), instance stats and supported device families |
-| `GET /status` | `{online, offline, devices: [{device_id, name, family, enabled, reachable, latency_ms, last_checked}]}` |
+| `GET /status` | `{online, offline, interval_seconds, devices: [{device_id, name, family, enabled, reachable, latency_ms, last_checked}]}` — status persists between polls; `last_checked` (null = never) shows freshness |
 | `GET /audit?limit=100` | audit entries newest-first (limit ≤ 500) |
 | `GET /health` | `{status: "ok", version}` — unauthenticated liveness probe |
 
@@ -307,7 +315,13 @@ without checking the relevant guide.
 |---|---|---|---|---|---|
 | `switch` | all ZyNOS and FaOS based switches | XS1930-12HP (V4.80–4.90), CX4800-56F (V1.00–5.00) | `show running-config` | plain form is unpaged; the paged variant is `show running-config page` — not used | **Not in alpha.** Documented path: `copy tftp config <1\|2> <ip> <file>` + `reload config <1\|2>` (requires TFTP server + reboot) |
 | `firewall` | all uOS based firewalls | USG FLEX 700H (V1.39) | `show config running \| no-pager` | pager additionally disabled session-wide via `cliconfig pager enabled false` | **Not in alpha.** Documented path: stage file on the device, then `cmd config-apply <file>` |
+| `zld_firewall` | all ZLD based firewalls (ATP & USG ZyWALL) — **End of Life** | ATP800 (V4.10–5.42; the ZLD guide covers USG ZyWALL as well) | `show running-config` (at privilege prompt; driver sends `enable` if needed) | none documented for ZLD | **Supported.** FTP upload to `/conf/`, then `apply /conf/<file> ignore-error rollback` + `write` (single-line command). Requires FTP enabled on the device. |
 | `ap` | ZyNOS based access points | WBE660S (V7.40) | `show running-config` (at enable prompt) | — | **Supported.** FTP upload to `/conf/`, then `apply running-config /conf/<file>` + `ignore error rollback` + `write`. Requires FTP enabled on the AP. |
+
+> ⚠ **End of Life:** ZLD-based devices (USG & ATP series) are in End-of-Life
+> state at Zyxel — no further firmware updates or support. `zld_firewall`
+> support exists for existing installations; plan migration to a current
+> platform (e.g. USG FLEX H / uOS).
 
 Prompt patterns (used to detect command completion):
 
@@ -443,7 +457,7 @@ valid.
 | Revert fails with `[failed] Could not upload config to AP (FTP must be enabled…)` | AP revert needs FTP (port 21) enabled on the access point; Zynk uploads via FTP after the SSH session is established. |
 | `git_commit` is `null` on new snapshots | `git` is missing or broken in the runtime; storage degrades to plain files (snapshots still work). Install git and future pulls will commit. |
 | Schedule didn't fire | Cron is **UTC** — check the offset. Also confirm the schedule is enabled and targets exist (device enabled / tag matches). |
-| Status shows unknown (gray dot) | Status probe hasn't run yet (poll interval) or the device was just added; press *Check Status*. |
+| Status shows unknown (gray dot) | The device has never been checked (new device / fresh install) — wait for the next poll (up to 5 min) or press *Check Status*. |
 
 ## 12. Limitations & roadmap
 
@@ -452,7 +466,8 @@ Known alpha limitations:
 - **Switch/firewall revert not implemented** — the documented device commands
   require infrastructure (TFTP server / on-device file staging) that isn't built
   yet; the API returns a clear `[unsupported]` error instead of guessing.
-- Status is a TCP probe of the SSH port, not a full SSH login, and there is no
+- Status is a TCP probe of the SSH port every 5 minutes (not a full SSH login);
+  each device keeps its last known state until the next check, and there is no
   WebSocket push (the UI polls every 30 s).
 - Single admin user; no roles/multi-user.
 - No built-in TLS; assume reverse proxy for anything beyond localhost/LAN.

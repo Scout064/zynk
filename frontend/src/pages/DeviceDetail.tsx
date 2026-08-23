@@ -4,6 +4,7 @@ import { api, ApiError } from "../api/client";
 import type { Device, Snapshot } from "../api/types";
 import { Badge, Button, Card, EmptyState, Spinner, StatusDot } from "../components/ui";
 import { PageHeader } from "../components/Layout";
+import { familyBadgeTone } from "./Devices";
 
 function DiffView({ diff }: { diff: string }) {
   const lines = diff.split("\n");
@@ -150,8 +151,8 @@ export default function DeviceDetail() {
           <span className="text-zinc-400">
             {device.host}:{device.port} · {device.username}
           </span>
-          <Badge tone={device.family === "switch" ? "indigo" : device.family === "firewall" ? "amber" : "green"}>
-            {device.family}
+          <Badge tone={familyBadgeTone(device.family)}>
+            {device.family === "zld_firewall" ? "firewall (ZLD, EOL)" : device.family}
           </Badge>
           {device.model && <span className="text-zinc-400">{device.model}</span>}
           {device.tags.map((t) => (

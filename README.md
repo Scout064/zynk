@@ -14,7 +14,8 @@ SSH sessions; verify against your real hardware before relying on it.
 - Config storage in a **git repository** (folder per device) + SQLite index
 - Unified diff between any two snapshots, snapshot viewer and download
 - Zip export of a device's full history
-- Online/offline status polling (TCP probe of the SSH port) on a configurable interval
+- Online/offline status polling (TCP probe of the SSH port) every 5 minutes;
+  each device keeps its last known state until the next check
 - JWT-authenticated REST API + modern dark-themed web UI
 - Immutable audit log of every login, pull, export, revert and inventory change
 
@@ -23,8 +24,14 @@ SSH sessions; verify against your real hardware before relying on it.
 | Family | Models (verified against guide) | Config pull | Revert |
 |---|---|---|---|
 | Switch | All ZyNOS and FaOS based Switches | `show running-config` | not in alpha (needs TFTP + reload) |
-| Firewall | All uOS based | `show config running \| no-pager` | not in alpha (needs file staged on device) |
+| Firewall (uOS) | All uOS based | `show config running \| no-pager` | not in alpha (needs file staged on device) |
+| Firewall (ZLD) | All ZLD based (ATP & USG ZyWALL) | `show running-config` | yes — FTP upload + `apply /conf/<file> ignore-error rollback` + `write` |
 | Access Point | ZyNOS based | `show running-config` | yes — FTP upload + `apply running-config ... ignore error rollback` + `write` |
+
+> ⚠ **End of Life:** ZLD-based devices (USG & ATP series) are in End-of-Life
+> state at Zyxel — no further firmware updates or support. They remain
+> supported by Zynk for existing installations, but plan migration to a
+> current platform (e.g. USG FLEX H / uOS).
 
 ## Quick start (Docker)
 
@@ -83,7 +90,7 @@ cd backend
 | `ZYNK_DATA_DIR` | `./data` | Runtime data directory |
 | `ZYNK_INITIAL_ADMIN_PASSWORD` | *(random, printed once)* | First-run admin password |
 | `ZYNK_FORCE_ADMIN_RESET` | `false` | **Dev only:** reset the `admin` password to `ZYNK_INITIAL_ADMIN_PASSWORD` (or a newly generated one) on every startup — escape hatch for a lost local password. Never enable in production. |
-| `ZYNK_STATUS_POLL_INTERVAL_SECONDS` | `60` | Device status poll interval |
+| `ZYNK_STATUS_POLL_INTERVAL_SECONDS` | `300` | Device status poll interval (5 min default) |
 | `ZYNK_SSH_CONNECT_TIMEOUT_SECONDS` | `15` | SSH connect timeout |
 | `ZYNK_SSH_COMMAND_TIMEOUT_SECONDS` | `120` | SSH command timeout |
 | `ZYNK_ACCESS_TOKEN_TTL_MINUTES` | `720` | JWT lifetime |

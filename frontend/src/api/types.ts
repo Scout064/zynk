@@ -1,4 +1,4 @@
-export type Family = "switch" | "firewall" | "ap";
+export type Family = "switch" | "firewall" | "zld_firewall" | "ap";
 
 export interface Device {
   id: string;
@@ -41,6 +41,7 @@ export interface Schedule {
 export interface StatusSummary {
   online: number;
   offline: number;
+  interval_seconds: number;
   devices: {
     device_id: string;
     name: string;
@@ -86,5 +87,6 @@ export interface AboutInfo {
     config_pull: string;
     revert_supported: boolean;
     revert_note: string;
+    eol: boolean;
   }[];
 }

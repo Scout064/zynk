@@ -7,11 +7,13 @@ from app.devices.zyxel_drivers import (
     ZyxelAPDriver,
     ZyxelFirewallDriver,
     ZyxelSwitchDriver,
+    ZyxelZLDFirewallDriver,
 )
 
 _DRIVERS: dict[str, type[ZyxelDriver]] = {
     DeviceFamily.SWITCH.value: ZyxelSwitchDriver,
     DeviceFamily.FIREWALL.value: ZyxelFirewallDriver,
+    DeviceFamily.ZLD_FIREWALL.value: ZyxelZLDFirewallDriver,
     DeviceFamily.AP.value: ZyxelAPDriver,
 }
 
