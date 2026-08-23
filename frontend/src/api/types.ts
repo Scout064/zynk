@@ -61,3 +61,30 @@ export interface AuditEntry {
   detail: string;
   ok: boolean;
 }
+
+export interface AboutInfo {
+  name: string;
+  version: string;
+  python_version: string;
+  license: string;
+  repository: string;
+  api_docs: string;
+  started_at: string | null;
+  uptime_seconds: number | null;
+  stats: {
+    devices: number;
+    devices_enabled: number;
+    snapshots: number;
+    schedules: number;
+    audit_entries: number;
+  };
+  families: {
+    family: string;
+    label: string;
+    platform: string;
+    verified_models: string;
+    config_pull: string;
+    revert_supported: boolean;
+    revert_note: string;
+  }[];
+}

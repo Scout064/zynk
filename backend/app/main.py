@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, configs, devices, schedules, status
+from app.api import about, auth, configs, devices, schedules, status
 from app.core.config import get_settings
+from app.core.version import APP_NAME, __version__
 from app.db.base import get_engine, init_db, session_scope
 from app.scheduler import jobs
 from app.services import gitstore
@@ -41,6 +43,7 @@ async def _status_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _status_task
+    app.state.started_at = datetime.now(UTC)
     settings = get_settings()
     get_engine()
     init_db()
@@ -66,7 +69,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Zynk", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title=APP_NAME, version=__version__, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173"],
@@ -74,6 +77,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(about.router)
     app.include_router(auth.router)
     app.include_router(devices.router)
     app.include_router(configs.router)
@@ -82,7 +86,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok"}
+        return {"status": "ok", "version": __version__}
 
     dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if dist.exists():

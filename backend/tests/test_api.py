@@ -145,6 +145,31 @@ class TestSchedules:
         )
 
 
+class TestAbout:
+    def test_about_requires_auth(self, client: TestClient):
+        assert client.get("/api/about").status_code == 401
+
+    def test_about(self, client: TestClient, auth_headers):
+        make_device_row("about-sw")
+        resp = client.get("/api/about", headers=auth_headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Zynk"
+        assert data["version"] == "0.2.0"
+        assert data["license"] == "MIT"
+        assert data["repository"].startswith("https://github.com/")
+        assert data["stats"]["devices"] == 1
+        assert data["stats"]["snapshots"] == 0
+        assert {f["family"] for f in data["families"]} == {"switch", "firewall", "ap"}
+        assert data["started_at"] is not None
+        assert data["uptime_seconds"] is not None
+
+    def test_health_includes_version(self, client: TestClient):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        assert resp.json()["version"] == "0.2.0"
+
+
 class TestStatusAndAudit:
     def test_status_lists_devices(self, client: TestClient, auth_headers):
         make_device_row("edge-sw")

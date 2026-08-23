@@ -96,6 +96,7 @@ the working directory is also read).
 | `ZYNK_HOST` | `0.0.0.0` | Bind host (use `127.0.0.1` to restrict to localhost) |
 | `ZYNK_PORT` | `8000` | Bind port |
 | `ZYNK_INITIAL_ADMIN_PASSWORD` | *(random, printed once)* | Password for the `admin` user created on first start |
+| `ZYNK_FORCE_ADMIN_RESET` | `false` | **Dev only:** reset the `admin` password on **every** startup (to `ZYNK_INITIAL_ADMIN_PASSWORD`, or a generated one printed to the log). Escape hatch for a lost local password — never enable in production. |
 | `ZYNK_ACCESS_TOKEN_TTL_MINUTES` | `720` | JWT lifetime (12 h) |
 | `ZYNK_STATUS_POLL_INTERVAL_SECONDS` | `60` | How often device status is probed |
 | `ZYNK_SSH_CONNECT_TIMEOUT_SECONDS` | `15` | SSH TCP/banner/auth timeout |
@@ -150,6 +151,12 @@ computed by the scheduler. *Run Now* triggers the job immediately.
 
 ### Audit Log
 Every security-relevant event with actor, action, target, detail and success flag.
+
+### About
+Version information (backend/frontend/Python), instance uptime and usage stats,
+supported device families with revert support, tech stack overview, and links to
+the repository, API docs and full documentation. The current version is also
+shown at the bottom of the sidebar.
 
 ## 6. REST API reference
 
@@ -264,9 +271,10 @@ an automatic confirmation pull (`post_revert`).
 
 | Method & Path | Result |
 |---|---|
+| `GET /about` | version, runtime (Python, uptime, started_at), instance stats and supported device families |
 | `GET /status` | `{online, offline, devices: [{device_id, name, family, enabled, reachable, latency_ms, last_checked}]}` |
 | `GET /audit?limit=100` | audit entries newest-first (limit ≤ 500) |
-| `GET /health` | `{status: "ok"}` — unauthenticated liveness probe |
+| `GET /health` | `{status: "ok", version}` — unauthenticated liveness probe |
 
 ### 6.6 Error format
 
@@ -291,11 +299,11 @@ One driver per Zyxel product family, behind a common interface
 taken from the official CLI guides shipped in `CLI-GUIDE/` — do not change them
 without checking the relevant guide.
 
-| Family | Verified models (guide) | Config pull | Pager handling | Revert |
-|---|---|---|---|---|
-| `switch` | XS1930-12HP (V4.80–4.90), CX4800-56F (V1.00–5.00) | `show running-config` | plain form is unpaged; the paged variant is `show running-config page` — not used | **Not in alpha.** Documented path: `copy tftp config <1\|2> <ip> <file>` + `reload config <1\|2>` (requires TFTP server + reboot) |
-| `firewall` | USG FLEX 700H (V1.39) | `show config running \| no-pager` | pager additionally disabled session-wide via `cliconfig pager enabled false` | **Not in alpha.** Documented path: stage file on the device, then `cmd config-apply <file>` |
-| `ap` | WBE660S (V7.40) | `show running-config` (at enable prompt) | — | **Supported.** FTP upload to `/conf/`, then `apply running-config /conf/<file>` + `ignore error rollback` + `write`. Requires FTP enabled on the AP. |
+| Family | Platform (per README) | Verified models (guide) | Config pull | Pager handling | Revert |
+|---|---|---|---|---|---|
+| `switch` | all ZyNOS and FaOS based switches | XS1930-12HP (V4.80–4.90), CX4800-56F (V1.00–5.00) | `show running-config` | plain form is unpaged; the paged variant is `show running-config page` — not used | **Not in alpha.** Documented path: `copy tftp config <1\|2> <ip> <file>` + `reload config <1\|2>` (requires TFTP server + reboot) |
+| `firewall` | all uOS based firewalls | USG FLEX 700H (V1.39) | `show config running \| no-pager` | pager additionally disabled session-wide via `cliconfig pager enabled false` | **Not in alpha.** Documented path: stage file on the device, then `cmd config-apply <file>` |
+| `ap` | ZyNOS based access points | WBE660S (V7.40) | `show running-config` (at enable prompt) | — | **Supported.** FTP upload to `/conf/`, then `apply running-config /conf/<file>` + `ignore error rollback` + `write`. Requires FTP enabled on the AP. |
 
 Prompt patterns (used to detect command completion):
 
@@ -390,10 +398,15 @@ valid.
 > you would have to re-enter passwords on every device (configs and history
 > remain intact). Losing `secret.key` merely invalidates outstanding sessions.
 
-**Resetting the admin password**: with the container stopped, delete the
-`users` table rows from `zynk.db` (e.g. `sqlite3 data/zynk.db "DELETE FROM
-users;"`) and restart with `ZYNK_INITIAL_ADMIN_PASSWORD` set — bootstrap only
-creates a user when the table is empty.
+**Resetting the admin password**:
+
+- **Local development**: restart with `ZYNK_FORCE_ADMIN_RESET=true` and optionally
+  `ZYNK_INITIAL_ADMIN_PASSWORD=<new-pw>`. The `admin` password is reset on that
+  startup (a loud warning is printed; the reset is intended for dev only).
+- **Manual**: with the container stopped, delete the `users` rows from `zynk.db`
+  (e.g. `sqlite3 data/zynk.db "DELETE FROM users;"`) and restart with
+  `ZYNK_INITIAL_ADMIN_PASSWORD` set — bootstrap only creates a user when the
+  table is empty.
 
 ## 10. Security model
 

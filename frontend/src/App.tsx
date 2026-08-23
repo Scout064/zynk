@@ -8,6 +8,7 @@ import Devices from "./pages/Devices";
 import DeviceDetail from "./pages/DeviceDetail";
 import Schedules from "./pages/Schedules";
 import Audit from "./pages/Audit";
+import About from "./pages/About";
 import { Spinner } from "./components/ui";
 
 function Shell() {
@@ -49,6 +50,7 @@ function Router() {
       <Route path="/devices/:id" element={<DeviceDetail />} />
       <Route path="/schedules" element={<Schedules />} />
       <Route path="/audit" element={<Audit />} />
+      <Route path="/about" element={<About />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

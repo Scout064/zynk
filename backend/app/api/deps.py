@@ -37,10 +37,17 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 
 def bootstrap_admin(db: Session) -> str | None:
-    """Create the initial admin account on first run; returns password if generated."""
+    """Create the initial admin account on first run; returns password if generated.
+
+    With ZYNK_FORCE_ADMIN_RESET=true the 'admin' password is reset on EVERY
+    startup (local development escape hatch for a lost password). Never enable
+    this in production.
+    """
     settings = get_settings()
-    if db.query(User).count() > 0:
+    admin = db.query(User).filter(User.username == "admin").one_or_none()
+    if admin is not None and not settings.force_admin_reset:
         return None
+
     if settings.initial_admin_password:
         password = settings.initial_admin_password
         generated = False
@@ -48,11 +55,23 @@ def bootstrap_admin(db: Session) -> str | None:
         alphabet = string.ascii_letters + string.digits
         password = "".join(secrets.choice(alphabet) for _ in range(16))
         generated = True
-    db.add(User(username="admin", password_hash=hash_password(password), is_admin=True))
-    db.commit()
+
+    if admin is not None:  # force reset path
+        admin.password_hash = hash_password(password)
+        db.commit()
+        print("=" * 60)
+        print("WARNING: ZYNK_FORCE_ADMIN_RESET is enabled — the 'admin'")
+        print("password was reset on this startup. Disable it outside")
+        print("local development!")
+        print("=" * 60)
+    else:
+        db.add(User(username="admin", password_hash=hash_password(password), is_admin=True))
+        db.commit()
+
     if generated:
         print("=" * 60)
-        print("First run: created user 'admin' with generated password:")
+        label = "reset" if settings.force_admin_reset else "created"
+        print(f"{settings.app_name}: {label} user 'admin' with generated password:")
         print(f"    {password}")
         print("(Set ZYNK_INITIAL_ADMIN_PASSWORD to choose your own.)")
         print("=" * 60)

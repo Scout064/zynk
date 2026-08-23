@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     ssh_command_timeout_seconds: int = 120
     device_status_history: int = 500
     initial_admin_password: str | None = None
+    force_admin_reset: bool = False
 
     @property
     def db_path(self) -> Path:

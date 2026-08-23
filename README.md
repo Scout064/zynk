@@ -82,6 +82,7 @@ cd backend
 |---|---|---|
 | `ZYNK_DATA_DIR` | `./data` | Runtime data directory |
 | `ZYNK_INITIAL_ADMIN_PASSWORD` | *(random, printed once)* | First-run admin password |
+| `ZYNK_FORCE_ADMIN_RESET` | `false` | **Dev only:** reset the `admin` password to `ZYNK_INITIAL_ADMIN_PASSWORD` (or a newly generated one) on every startup — escape hatch for a lost local password. Never enable in production. |
 | `ZYNK_STATUS_POLL_INTERVAL_SECONDS` | `60` | Device status poll interval |
 | `ZYNK_SSH_CONNECT_TIMEOUT_SECONDS` | `15` | SSH connect timeout |
 | `ZYNK_SSH_COMMAND_TIMEOUT_SECONDS` | `120` | SSH command timeout |

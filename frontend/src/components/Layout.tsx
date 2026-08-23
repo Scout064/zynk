@@ -1,12 +1,14 @@
 import { useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { setToken } from "../api/client";
+import pkg from "../../package.json";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: "▦" },
   { to: "/devices", label: "Devices", icon: "⛁" },
   { to: "/schedules", label: "Schedules", icon: "⏱" },
   { to: "/audit", label: "Audit Log", icon: "☰" },
+  { to: "/about", label: "About", icon: "ⓘ" },
 ];
 
 export function Layout({ children, username }: { children: ReactNode; username: string }) {
@@ -56,6 +58,7 @@ export function Layout({ children, username }: { children: ReactNode; username: 
               Sign out
             </button>
           </div>
+          <p className="mt-1.5 px-2 text-[11px] text-zinc-600">Zynk v{pkg.version}</p>
         </div>
       </aside>
       {open && (
