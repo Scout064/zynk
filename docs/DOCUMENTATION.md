@@ -101,6 +101,9 @@ the working directory is also read).
 | `ZYNK_STATUS_POLL_INTERVAL_SECONDS` | `300` | How often device status is probed (every 5 minutes by default) |
 | `ZYNK_SSH_CONNECT_TIMEOUT_SECONDS` | `15` | SSH TCP/banner/auth timeout |
 | `ZYNK_SSH_COMMAND_TIMEOUT_SECONDS` | `120` | Timeout per CLI command (config pulls can be large) |
+| `ZYNK_TFTP_PUBLIC_ADDRESS` | *(auto-detect)* | IP address switches use to reach Zynk for TFTP restores. Auto-detection uses the routing source IP toward the device; in Docker bridge networking set this to the host's LAN IP. |
+| `ZYNK_TFTP_PORT` | `69` | UDP port the TFTP server listens on for switch restores. Binding below 1024 requires root or `CAP_NET_BIND_SERVICE`. |
+| `ZYNK_SWITCH_REBOOT_TIMEOUT_SECONDS` | `300` | How long a switch revert waits for the device to come back after `reload config` |
 
 ## 4. First steps
 
@@ -313,7 +316,7 @@ without checking the relevant guide.
 
 | Family | Platform (per README) | Verified models (guide) | Config pull | Pager handling | Revert |
 |---|---|---|---|---|---|
-| `switch` | all ZyNOS and FaOS based switches | XS1930-12HP (V4.80–4.90), CX4800-56F (V1.00–5.00) | `show running-config` | plain form is unpaged; the paged variant is `show running-config page` — not used | **Not in alpha.** Documented path: `copy tftp config <1\|2> <ip> <file>` + `reload config <1\|2>` (requires TFTP server + reboot) |
+| `switch` | all ZyNOS and FaOS based switches | XS1930-12HP (V4.80–4.90), CX4800-56F (V1.00–5.00) | `show running-config` | plain form is unpaged; the paged variant is `show running-config page` — not used | **Supported.** Zynk serves the snapshot over TFTP (UDP 69, blksize negotiation per RFC 2348), stages it with `copy tftp config 1 <ip> <file>`, then applies it with `reload config 1` (confirmed `y`) — a warm reboot. Zynk waits for the SSH port to answer again before the confirmation pull. |
 | `firewall` | all uOS based firewalls | USG FLEX 700H (V1.39) | `show config running \| no-pager` | pager additionally disabled session-wide via `cliconfig pager enabled false` | **Not in alpha.** Documented path: stage file on the device, then `cmd config-apply <file>` |
 | `zld_firewall` | all ZLD based firewalls (ATP & USG ZyWALL) — **End of Life** | ATP800 (V4.10–5.42; the ZLD guide covers USG ZyWALL as well) | `show running-config` (at privilege prompt; driver sends `enable` if needed) | none documented for ZLD | **Supported.** FTP upload to `/conf/`, then `apply /conf/<file> ignore-error rollback` + `write` (single-line command). Requires FTP enabled on the device. |
 | `ap` | ZyNOS based access points | WBE660S (V7.40) | `show running-config` (at enable prompt) | — | **Supported.** FTP upload to `/conf/`, then `apply running-config /conf/<file>` + `ignore error rollback` + `write`. Requires FTP enabled on the AP. |
@@ -455,6 +458,10 @@ valid.
 | `[timeout] Timed out waiting for prompt` | The device's prompt doesn't match the expected pattern. ANSI escape sequences (e.g. the `ESC 7` DECSC marker XS1930 switches emit after the prompt) and `\r` are stripped automatically; if it still fails, the system prompt probably contains unexpected characters — capture the CLI prompt and extend the driver's `prompt_re`. |
 | Pull says `Device returned an empty configuration` | Device answered but produced no config — often a pager or privilege issue. Verify manually with the same SSH user. |
 | Revert fails with `[failed] Could not upload config to AP (FTP must be enabled…)` | AP revert needs FTP (port 21) enabled on the access point; Zynk uploads via FTP after the SSH session is established. |
+| Switch revert fails with `cannot bind TFTP listener … 69/udp` | Zynk could not bind UDP 69. In Docker publish the port (`-p 69:69/udp`); on Linux as non-root use `setcap cap_net_bind_service` or a port above 1024 via `ZYNK_TFTP_PORT` (only works if the switch firmware supports non-standard TFTP ports — usually it does not). |
+| Switch revert fails with `TFTP transfer failed: no TFTP request arrived` | The switch never connected back to Zynk. The device pulls FROM Zynk: verify it can route to `ZYNK_TFTP_PUBLIC_ADDRESS` (or the auto-detected IP) on UDP 69 — in Docker bridge mode you must set `ZYNK_TFTP_PUBLIC_ADDRESS` to the host's LAN IP. |
+| Switch revert fails with `Switch did not come back within …s` | The warm reboot after `reload config 1` exceeded `ZYNK_SWITCH_REBOOT_TIMEOUT_SECONDS`. Check whether the restored config changed the management IP (update the device entry if so) or the device is stuck. |
+| Switch revert succeeded but the confirmation pull shows an empty/old config | If the restored config changed the management IP or credentials, the post-revert pull hits the old address — update the device entry and pull again. |
 | `git_commit` is `null` on new snapshots | `git` is missing or broken in the runtime; storage degrades to plain files (snapshots still work). Install git and future pulls will commit. |
 | Schedule didn't fire | Cron is **UTC** — check the offset. Also confirm the schedule is enabled and targets exist (device enabled / tag matches). |
 | Status shows unknown (gray dot) | The device has never been checked (new device / fresh install) — wait for the next poll (up to 5 min) or press *Check Status*. |
@@ -463,9 +470,12 @@ valid.
 
 Known alpha limitations:
 
-- **Switch/firewall revert not implemented** — the documented device commands
-  require infrastructure (TFTP server / on-device file staging) that isn't built
-  yet; the API returns a clear `[unsupported]` error instead of guessing.
+- **uOS firewall revert not implemented** — staging the file on the device
+  (`cmd config-apply`) isn't built yet; the API returns a clear `[unsupported]`
+  error instead of guessing.
+- Switch revert is implemented against the documented XS1930/CX4800 commands
+  but not yet verified on real hardware end-to-end — treat the first run as an
+  experiment and keep console access available.
 - Status is a TCP probe of the SSH port every 5 minutes (not a full SSH login);
   each device keeps its last known state until the next check, and there is no
   WebSocket push (the UI polls every 30 s).
@@ -473,7 +483,7 @@ Known alpha limitations:
 - No built-in TLS; assume reverse proxy for anything beyond localhost/LAN.
 - Prompt detection is regex-based and may need tuning for exotic system names.
 
-Roadmap candidates: switch revert via TFTP + `reload config`,
-firewall revert via `cmd config-apply`, WebSocket status push, SNMP-free
-latency history graphs, notification hooks on config-change detection.
+Roadmap candidates: uOS firewall revert via `cmd config-apply`, WebSocket
+status push, SNMP-free latency history graphs, notification hooks on
+config-change detection.
 

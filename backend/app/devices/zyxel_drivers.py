@@ -6,7 +6,8 @@ import os
 import re
 
 from app.devices.base import ZyxelDriver
-from app.devices.transport import DriverError, OperationFailedError
+from app.devices.tftp import SingleFileTFTPServer, random_filename, tftp_lock
+from app.devices.transport import DriverError, OperationFailedError, UnreachableError
 
 # New-generation Ethernet switch CLI (XS1930 / CX4800 style): prompts look
 # like `sysname>` (exec) or `sysname#` (enable) or `sysname(config)#`.
@@ -27,12 +28,21 @@ class ZyxelSwitchDriver(ZyxelDriver):
     """XS1930-12HP / CX4800-56F (and similar new-gen switches).
 
     `show running-config` outputs the full config unpaged (the paged variant
-    is `show running-config page`). Config restore via TFTP + reload is not
-    part of the alpha.
+    is `show running-config page`).
+
+    Revert: serve the snapshot over TFTP, `copy tftp config 1 <ip> <file>` to
+    stage it in config slot 1, then `reload config 1` (warm reboot, confirmed
+    with `y`) to apply. The device downloads FROM Zynk — Zynk must be reachable
+    from the switch on UDP port 69.
     """
 
     family = "switch"
     prompt_re = SWITCH_PROMPT_RE
+    RELOAD_CONFIRM_RE = re.compile(r"\[y/N\]\s*$", re.IGNORECASE)
+    TFTP_ERROR_RE = re.compile(
+        r"(error|fail|can'?t|cannot|timed?\s*out|unreachable|too long|not\s+found)",
+        re.IGNORECASE,
+    )
 
     def _disable_pager(self) -> None:
         # New-gen switch CLI does not page `show running-config` output.
@@ -48,11 +58,87 @@ class ZyxelSwitchDriver(ZyxelDriver):
         out = self.run("show version", timeout=30)
         return bool(out.strip())
 
-    def apply_config(self, config_text: str) -> str:
+    def _tftp_address(self) -> str:
+        """Address the switch should use to reach this Zynk instance."""
+        if self.spec.tftp_address:
+            return self.spec.tftp_address
+        # Auto-detect: which local source IP would route toward the device?
+        import socket as _socket
+
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            s.connect((self.spec.host, self.spec.port))
+            return s.getsockname()[0]
+        except OSError as err:
+            raise OperationFailedError(
+                f"Could not determine TFTP source address toward {self.spec.host} "
+                f"({err}). Set ZYNK_TFTP_PUBLIC_ADDRESS explicitly."
+            ) from err
+        finally:
+            s.close()
+
+    def _wait_for_reboot(self) -> None:
+        """Block until the device's SSH port answers again (plus a settle delay)."""
+        import socket as _socket
+        import time as _time
+
+        deadline = _time.monotonic() + self.spec.reboot_timeout
+        while _time.monotonic() < deadline:
+            try:
+                with _socket.create_connection((self.spec.host, self.spec.port), timeout=3.0):
+                    _time.sleep(self.spec.reboot_settle)  # let SSH finish initializing
+                    return
+            except OSError:
+                _time.sleep(5.0)
         raise OperationFailedError(
-            "Switch config revert requires TFTP staging + reload and is not enabled in this "
-            "alpha (commands are documented: copy tftp config / reload config)"
+            f"Switch did not come back within {self.spec.reboot_timeout:.0f}s after "
+            "reload — verify it rebooted with the restored configuration."
         )
+
+    def apply_config(self, config_text: str) -> str:
+        """Restore a snapshot: TFTP staging into config slot 1 + reload config 1.
+
+        Destructive: the switch warm-reboots with the staged configuration.
+        """
+        tftp_addr = self._tftp_address()
+        filename = random_filename()
+        server = SingleFileTFTPServer(
+            config_text.encode("utf-8"), filename, port=self.spec.tftp_port
+        )
+        with tftp_lock:
+            try:
+                server.start()
+            except Exception as err:
+                raise OperationFailedError(str(err)) from err
+            try:
+                out = self.run(
+                    f"copy tftp config 1 {tftp_addr} {filename}",
+                    timeout=180,
+                )
+                if self.TFTP_ERROR_RE.search(out):
+                    raise OperationFailedError(f"Switch rejected the TFTP restore: {out.strip()}")
+                if not server.wait(timeout=180):
+                    raise OperationFailedError(f"TFTP transfer failed: {server.error}")
+            finally:
+                server.stop()
+            import time as _time
+
+            _time.sleep(2.0)  # let the switch finish writing flash after last ACK
+
+        # Reload with the staged config: confirm the [y/N] prompt, then the
+        # connection drops while the switch reboots — that drop means success.
+        self.transport.sendline("reload config 1")
+        self.transport.read_until(self.RELOAD_CONFIRM_RE, timeout=30)
+        self.transport.sendline("y")
+        try:
+            self.transport.read_until(self.prompt_re, timeout=60)
+        except UnreachableError:
+            pass  # connection dropped during reboot — expected
+        except DriverError:
+            pass  # some firmware reboots without a final prompt — tolerate
+
+        self._wait_for_reboot()
+        return out
 
 
 class ZyxelFirewallDriver(ZyxelDriver):

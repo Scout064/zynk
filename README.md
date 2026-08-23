@@ -23,10 +23,16 @@ SSH sessions; verify against your real hardware before relying on it.
 
 | Family | Models (verified against guide) | Config pull | Revert |
 |---|---|---|---|
-| Switch | All ZyNOS and FaOS based Switches | `show running-config` | not in alpha (needs TFTP + reload) |
+| Switch | All ZyNOS and FaOS based Switches | `show running-config` | yes — TFTP + `copy tftp config` + `reload config` (device reboots) |
 | Firewall (uOS) | All uOS based | `show config running \| no-pager` | not in alpha (needs file staged on device) |
 | Firewall (ZLD) | All ZLD based (ATP & USG ZyWALL) | `show running-config` | yes — FTP upload + `apply /conf/<file> ignore-error rollback` + `write` |
 | Access Point | ZyNOS based | `show running-config` | yes — FTP upload + `apply running-config ... ignore error rollback` + `write` |
+
+> ⚠ **Switch revert reboots the device:** the snapshot is staged over TFTP
+> (Zynk serves it on UDP port 69 — the switch must be able to reach Zynk) and
+> applied with `reload config 1`, a warm reboot. If the restored config changes
+> the management IP, update the device entry afterwards. In Docker, publish
+> `69/udp` and set `ZYNK_TFTP_PUBLIC_ADDRESS` to the host's LAN IP.
 
 > ⚠ **End of Life:** ZLD-based devices (USG & ATP series) are in End-of-Life
 > state at Zyxel — no further firmware updates or support. They remain
@@ -94,6 +100,9 @@ cd backend
 | `ZYNK_SSH_CONNECT_TIMEOUT_SECONDS` | `15` | SSH connect timeout |
 | `ZYNK_SSH_COMMAND_TIMEOUT_SECONDS` | `120` | SSH command timeout |
 | `ZYNK_ACCESS_TOKEN_TTL_MINUTES` | `720` | JWT lifetime |
+| `ZYNK_TFTP_PUBLIC_ADDRESS` | *(auto-detect)* | IP switches use to reach Zynk for config restores (set explicitly in Docker) |
+| `ZYNK_TFTP_PORT` | `69` | TFTP listen port for switch restores (UDP) |
+| `ZYNK_SWITCH_REBOOT_TIMEOUT_SECONDS` | `300` | Max time to wait for a switch to come back after `reload config` |
 
 ## Architecture
 

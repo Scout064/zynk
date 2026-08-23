@@ -52,6 +52,9 @@ def make_connection_spec(device: Device) -> ConnectionSpec:
         password=decrypt_secret(device.password_enc),
         connect_timeout=settings.ssh_connect_timeout_seconds,
         command_timeout=settings.ssh_command_timeout_seconds,
+        tftp_address=settings.tftp_public_address,
+        tftp_port=settings.tftp_port,
+        reboot_timeout=float(settings.switch_reboot_timeout_seconds),
     )
 
 

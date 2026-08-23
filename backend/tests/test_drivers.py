@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from app.devices.base import ConnectionSpec
 from app.devices.factory import make_driver
-from app.devices.transport import DriverError, ShellTransport, sanitize_terminal_output
+from app.devices.transport import (
+    DriverError,
+    OperationFailedError,
+    ShellTransport,
+    UnreachableError,
+    sanitize_terminal_output,
+)
 
 
 class FakeTransport(ShellTransport):
@@ -88,13 +97,6 @@ class TestSwitchDriver:
         assert "sysname#" not in cfg
         d.close()
 
-    def test_apply_not_supported(self, spec):
-        from app.devices.transport import OperationFailedError
-
-        d = make_fake_driver("switch", {}, "sysname# ")
-        with pytest.raises(OperationFailedError):
-            d.apply_config("x")
-
     def test_prompt_with_ansi_escapes(self, spec):
         """Regression: XS1930-12HP emits `prompt# \\x1b7` (DECSC) after login."""
         d = make_fake_driver(
@@ -108,6 +110,119 @@ class TestSwitchDriver:
         assert "vlan 1" in cfg
         assert "\x1b" not in cfg
         d.close()
+
+    def test_apply_config_not_implemented_raises(self, spec):
+        """Base class default still raises for families without revert."""
+        from app.devices.base import ZyxelDriver
+
+        class Bare(ZyxelDriver):
+            family = "bare"
+
+        with pytest.raises(OperationFailedError):
+            Bare(spec).apply_config("x")
+
+
+class TestSwitchRestore:
+    """Integration: driver + real TFTP server + scripted SSH reload flow."""
+
+    TFTP_TEST_PORT = 6969  # unprivileged fixed port; driver + test client agree on it
+
+    class RestoreFake(FakeTransport):
+        def __init__(self):
+            super().__init__({}, "sysname# ")
+
+        def read_until(self, pattern, timeout: float = 60.0):
+            cmd = self.sent[-1] if self.sent else ""
+            if cmd.startswith("copy tftp config"):
+                return f"{cmd}\r\n\r\nTransfer success.\r\nsysname# "
+            if cmd == "reload config 1":
+                return (
+                    "reload config 1\r\nDo you really want to reboot system with "
+                    "configuration file 1? [y/N]"
+                )
+            if cmd == "y":
+                raise UnreachableError("Connection closed by device")
+            return super().read_until(pattern, timeout)
+
+    def _fetch_thread(self, filename: str, received: list):
+        """TFTP client with retry until the driver's server is listening."""
+
+        def run():
+            from tests.test_tftp import tftp_get
+
+            for _ in range(50):
+                try:
+                    received.append(
+                        tftp_get("127.0.0.1", TestSwitchRestore.TFTP_TEST_PORT, filename)
+                    )
+                    return
+                except (RuntimeError, OSError, TimeoutError):
+                    time.sleep(0.1)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t
+
+    def test_full_restore_flow(self, monkeypatch):
+        import socket as sk
+
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.random_filename",
+            lambda: "fixed_restore.cfg",
+        )
+
+        # SSH listener so the post-reboot probe finds the "switch back up"
+        listener = sk.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        ssh_probe_port = listener.getsockname()[1]
+
+        received: list[bytes] = []
+        self._fetch_thread("fixed_restore.cfg", received)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=ssh_probe_port,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+            reboot_timeout=10.0,
+            reboot_settle=0.0,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: self.RestoreFake()
+        d.connect()
+
+        result = d.apply_config(SWITCH_CONFIG)
+        listener.close()
+
+        assert "Transfer success." in result
+        assert received and received[0].decode() == SWITCH_CONFIG  # TFTP payload intact
+        # exact CLI sequence issued
+        assert "copy tftp config 1 127.0.0.1 fixed_restore.cfg" in d.transport.sent
+        assert "reload config 1" in d.transport.sent
+        assert "y" in d.transport.sent
+
+    def test_copy_error_surfaces(self, monkeypatch):
+        class CopyFailFake(self.RestoreFake):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy tftp config"):
+                    return f"{cmd}\r\nTFTP: error code 1 (file not found)\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: CopyFailFake()
+        d.connect()
+        with pytest.raises(OperationFailedError, match="rejected the TFTP restore"):
+            d.apply_config(SWITCH_CONFIG)
 
 
 class TestFirewallDriver:

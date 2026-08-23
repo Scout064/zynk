@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     device_status_history: int = 500
     initial_admin_password: str | None = None
     force_admin_reset: bool = False
+    # Switch revert: the device pulls the config from us over TFTP.
+    tftp_public_address: str | None = None  # None = auto-detect (Docker: set explicitly)
+    tftp_port: int = 69  # needs CAP_NET_BIND_SERVICE / -p 69:69/udp in Docker
+    switch_reboot_timeout_seconds: int = 300
 
     @property
     def db_path(self) -> Path:
