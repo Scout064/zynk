@@ -331,11 +331,11 @@ class TestSwitchRestore:
                 cmd = self.sent[-1] if self.sent else ""
                 if cmd.startswith("copy running-config tftp"):
                     return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
-                if cmd == "help":
+                if cmd == "?":
                     # exact basic-CLI command set observed on a real
                     # unlicensed XS1930-12HP (V4.80): no `copy`, has `import`
                     return (
-                        "help\r\n  Commands available:\r\n\r\n  boot\r\n"
+                        "?\r\n  Commands available:\r\n\r\n  boot\r\n"
                         "  cable-diagnostics\r\n  clear\r\n  disable\r\n  erase\r\n"
                         "  exit\r\n  igmp-flush\r\n  import\r\n  locator-led\r\n"
                         "  logout\r\n  mac-flush\r\n  no\r\n  ping\r\n  ping6\r\n"
@@ -371,9 +371,9 @@ class TestSwitchRestore:
                 cmd = self.sent[-1] if self.sent else ""
                 if cmd.startswith("copy running-config tftp"):
                     return f"{cmd}\r\nInvalid input detected\r\nsysname# "
-                if cmd == "help":
+                if cmd == "?":
                     return (
-                        "help\r\n  copy running-config custom-default\r\n"
+                        "?\r\n  copy running-config custom-default\r\n"
                         "  backup config tftp\r\n  restore config tftp\r\n"
                         "  show running-config\r\nsysname# "
                     )

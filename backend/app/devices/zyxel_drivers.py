@@ -110,18 +110,22 @@ class ZyxelSwitchDriver(ZyxelDriver):
     def _probe_backup_commands(self) -> str:
         """Ask the switch which backup/TFTP commands its firmware actually has.
 
-        Runs the documented `help` command (enable mode) — read-only — and
-        returns the matching command lines. Used when the documented `copy`
-        syntax is rejected. Absence of any `copy` command combined with the
-        basic command set (import/reload/show) identifies the XS1930 series
-        restricted basic CLI — full CLI configuration (incl. copy tftp
-        config) requires the Access L3 license (guide §1.1, Table 4).
+        Runs `?` (enable mode) — read-only — and returns the matching command
+        lines. Used when the documented `copy` syntax is rejected. Absence of
+        any `copy` command combined with the basic command set
+        (import/reload/show) identifies the XS1930 series restricted basic
+        CLI — full CLI configuration (incl. copy tftp config) requires the
+        Access L3 license (guide §1.1, Table 4).
         """
         kw = re.compile(r"tftp|\bcopy\b|backup|restore|import|upload|download", re.IGNORECASE)
+        out = ""
+        help_err = None
         try:
-            out = self.run("help", timeout=60)
+            out = self.run("?", timeout=60)
         except DriverError as err:
-            return f"(help probe failed: {err})"
+            help_err = err
+        if help_err is not None or not out.strip():
+            return f"(probe with '?' failed: {help_err or 'empty output'})"
         has_copy = re.search(r"\bcopy\b", out, re.IGNORECASE)
         if not has_copy and re.search(r"\b(import|reload|show)\b", out, re.IGNORECASE):
             return (
@@ -136,8 +140,8 @@ class ZyxelSwitchDriver(ZyxelDriver):
             return "; ".join(lines[:20])
         raw = [ln.strip() for ln in out.splitlines() if ln.strip()][:8]
         return (
-            "no tftp/copy/backup/restore commands in help; first lines of help "
-            f"output: {'; '.join(raw) if raw else '(empty)'}"
+            "no tftp/copy/backup/restore commands in '?' output; first lines: "
+            f"{'; '.join(raw) if raw else '(empty)'}"
         )
 
     def apply_config(self, config_text: str) -> str:
