@@ -161,7 +161,11 @@ shown at the bottom of the sidebar.
 ## 6. REST API reference
 
 Base URL: `http://<host>:8000/api`. Interactive docs (OpenAPI/Swagger) are served
-by FastAPI at `/docs`.
+by FastAPI at `/docs` (and ReDoc at `/redoc`, raw schema at `/openapi.json`).
+
+> In dev mode (`npm run dev` on port 5173) the docs are reachable at
+> `http://localhost:5173/docs` as well — the Vite dev server proxies `/docs`,
+> `/redoc` and `/openapi.json` to the backend.
 
 **Authentication** — all endpoints below (except `/health`) require a JWT:
 
