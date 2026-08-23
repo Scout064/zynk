@@ -112,26 +112,28 @@ class ZyxelSwitchDriver(ZyxelDriver):
 
         Runs the documented `help` command (enable mode) — read-only — and
         returns the matching command lines. Used when the documented `copy`
-        syntax is rejected, which happens when the XS1930 series runs the
-        restricted basic CLI (full CLI configuration requires the Access L3
-        license — see guide §1.1/Table 4).
+        syntax is rejected. Absence of any `copy` command combined with the
+        basic command set (import/reload/show) identifies the XS1930 series
+        restricted basic CLI — full CLI configuration (incl. copy tftp
+        config) requires the Access L3 license (guide §1.1, Table 4).
         """
         kw = re.compile(r"tftp|\bcopy\b|backup|restore|import|upload|download", re.IGNORECASE)
         try:
             out = self.run("help", timeout=60)
         except DriverError as err:
             return f"(help probe failed: {err})"
+        has_copy = re.search(r"\bcopy\b", out, re.IGNORECASE)
+        if not has_copy and re.search(r"\b(import|reload|show)\b", out, re.IGNORECASE):
+            return (
+                "restricted basic CLI detected — no 'copy' command at all. The XS1930 "
+                "series ships with a restricted basic CLI; full CLI configuration "
+                "(incl. copy tftp config) requires the Access L3 license from Zyxel "
+                "(myzyxel.com, CLI guide §1.1). Config pull works, config restore "
+                "does not. GS1350/CX4800 series have the full CLI without a license."
+            )
         lines = [ln.strip() for ln in out.splitlines() if kw.search(ln) and ln.strip()]
         if lines:
             return "; ".join(lines[:20])
-        # Basic CLI detected: no copy/tftp/import at all in enable mode
-        if "import" in out.lower() or "reload" in out.lower():
-            return (
-                "basic CLI detected — no TFTP/backup commands. The XS1930 series "
-                "ships with a restricted CLI; full CLI configuration (incl. "
-                "copy tftp config) requires the Access L3 license from Zyxel "
-                "(see CLI guide §1.1). Config pull works, config restore does not."
-            )
         raw = [ln.strip() for ln in out.splitlines() if ln.strip()][:8]
         return (
             "no tftp/copy/backup/restore commands in help; first lines of help "

@@ -332,10 +332,16 @@ class TestSwitchRestore:
                 if cmd.startswith("copy running-config tftp"):
                     return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
                 if cmd == "help":
+                    # exact basic-CLI command set observed on a real
+                    # unlicensed XS1930-12HP (V4.80): no `copy`, has `import`
                     return (
-                        "help\r\n  Commands available:\r\n  help\r\n  exit\r\n"
-                        "  copy running-config custom-default\r\n  backup config tftp\r\n"
-                        "  restore config tftp\r\n  show running-config\r\nsysname# "
+                        "help\r\n  Commands available:\r\n\r\n  boot\r\n"
+                        "  cable-diagnostics\r\n  clear\r\n  disable\r\n  erase\r\n"
+                        "  exit\r\n  igmp-flush\r\n  import\r\n  locator-led\r\n"
+                        "  logout\r\n  mac-flush\r\n  no\r\n  ping\r\n  ping6\r\n"
+                        "  release\r\n  reload\r\n  renew\r\n  reset\r\n"
+                        "  restart\r\n  service-register\r\n  show\r\n"
+                        "  traceroute\r\n  traceroute6\r\nsysname# "
                     )
                 return super().read_until(pattern, timeout)
 
@@ -353,9 +359,40 @@ class TestSwitchRestore:
         assert not ok
         assert "switch refused" in msg
         assert "%Invalid command" in msg
-        # the help probe output must surface the firmware's real commands
-        assert "backup config tftp" in msg
-        assert "restore config tftp" in msg
+        # basic-CLI signature -> license explanation, not just 'import'
+        assert "restricted basic CLI" in msg
+        assert "Access L3 license" in msg
+
+    def test_tftp_path_test_partial_copy_support(self, monkeypatch):
+        """Device has some `copy` subcommands but rejects the TFTP one."""
+
+        class PartialCopyFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    return f"{cmd}\r\nInvalid input detected\r\nsysname# "
+                if cmd == "help":
+                    return (
+                        "help\r\n  copy running-config custom-default\r\n"
+                        "  backup config tftp\r\n  restore config tftp\r\n"
+                        "  show running-config\r\nsysname# "
+                    )
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: PartialCopyFake()
+        d.connect()
+        ok, msg = d.test_tftp_path()
+        assert not ok
+        assert "backup config tftp" in msg  # keyword listing, not license text
+        assert "Access L3 license" not in msg
 
 
 class TestFirewallDriver:
