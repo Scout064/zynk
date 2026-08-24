@@ -58,6 +58,9 @@ cd docker
 docker compose up -d --build
 ```
 
+> Step-by-step install guides: **[docs/INSTALL-DEBIAN.md](docs/INSTALL-DEBIAN.md)**
+> (manual install with systemd, and Docker) for Debian-based systems.
+
 The app runs on `http://localhost:8000`. On first start an `admin` user is created:
 
 - If `ZYNK_INITIAL_ADMIN_PASSWORD` is set, that password is used.

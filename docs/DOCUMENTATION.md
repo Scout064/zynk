@@ -1,7 +1,9 @@
 # Zynk Documentation
 
 Complete documentation for Zynk — self-hosted Zyxel network configuration backup
-and management. For a quick introduction see the [README](../README.md).
+and management. For a quick introduction see the [README](../README.md); for
+step-by-step installation on Debian-based systems see
+[INSTALL-DEBIAN.md](INSTALL-DEBIAN.md).
 
 > Device CLI commands in §7 were verified against the official Zyxel CLI
 > reference guides (kept locally in `CLI-GUIDE/`, not committed for copyright
