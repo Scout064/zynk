@@ -96,9 +96,14 @@ export default function DeviceDetail() {
   }
 
   async function revert(s: Snapshot) {
+    if (!device) return;
+    const rebootWarning =
+      device.family === "switch"
+        ? "\n\nNOTE: the switch will REBOOT with the restored configuration (staged via TFTP). It will be unreachable for a minute or two. If the snapshot contains a different management IP, update the device entry afterwards."
+        : "";
     if (
       !window.confirm(
-        `DANGER: This will overwrite the device's current configuration with the snapshot from ${new Date(s.ts).toLocaleString()}.\n\nThe device will be contacted immediately. Continue?`
+        `DANGER: This will overwrite the device's current configuration with the snapshot from ${new Date(s.ts).toLocaleString()}.\n\nThe device will be contacted immediately. Continue?${rebootWarning}`
       )
     )
       return;

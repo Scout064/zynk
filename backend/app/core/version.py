@@ -12,8 +12,8 @@ SUPPORTED_FAMILIES = [
         "platform": "ZyNOS / FaOS",
         "verified_models": "XS1930-12HP, CX4800-56F",
         "config_pull": "show running-config",
-        "revert_supported": False,
-        "revert_note": "not in alpha (needs TFTP + reload)",
+        "revert_supported": True,
+        "revert_note": "TFTP + copy tftp config + reload config (device reboots)",
         "eol": False,
     },
     {

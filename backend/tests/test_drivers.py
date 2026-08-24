@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from app.devices.base import ConnectionSpec
 from app.devices.factory import make_driver
-from app.devices.transport import DriverError, ShellTransport, sanitize_terminal_output
+from app.devices.tftp import SingleFileTFTPServer
+from app.devices.transport import (
+    DriverError,
+    OperationFailedError,
+    ShellTransport,
+    UnreachableError,
+    sanitize_terminal_output,
+)
 
 
 class FakeTransport(ShellTransport):
@@ -88,13 +98,6 @@ class TestSwitchDriver:
         assert "sysname#" not in cfg
         d.close()
 
-    def test_apply_not_supported(self, spec):
-        from app.devices.transport import OperationFailedError
-
-        d = make_fake_driver("switch", {}, "sysname# ")
-        with pytest.raises(OperationFailedError):
-            d.apply_config("x")
-
     def test_prompt_with_ansi_escapes(self, spec):
         """Regression: XS1930-12HP emits `prompt# \\x1b7` (DECSC) after login."""
         d = make_fake_driver(
@@ -108,6 +111,349 @@ class TestSwitchDriver:
         assert "vlan 1" in cfg
         assert "\x1b" not in cfg
         d.close()
+
+    def test_apply_config_not_implemented_raises(self, spec):
+        """Base class default still raises for families without revert."""
+        from app.devices.base import ZyxelDriver
+
+        class Bare(ZyxelDriver):
+            family = "bare"
+
+        with pytest.raises(OperationFailedError):
+            Bare(spec).apply_config("x")
+
+
+class TestSwitchRestore:
+    """Integration: driver + real TFTP server + scripted SSH reload flow."""
+
+    TFTP_TEST_PORT = 6969  # unprivileged fixed port; driver + test client agree on it
+
+    class RestoreFake(FakeTransport):
+        def __init__(self):
+            super().__init__({}, "sysname# ")
+
+        def read_until(self, pattern, timeout: float = 60.0):
+            cmd = self.sent[-1] if self.sent else ""
+            if cmd.startswith("copy tftp config"):
+                return f"{cmd}\r\n\r\nTransfer success.\r\nsysname# "
+            if cmd == "reload config 1":
+                return (
+                    "reload config 1\r\nDo you really want to reboot system with "
+                    "configuration file 1? [y/N]"
+                )
+            if cmd == "y":
+                raise UnreachableError("Connection closed by device")
+            return super().read_until(pattern, timeout)
+
+    def _fetch_thread(self, filename: str, received: list):
+        """TFTP client with retry until the driver's server is listening."""
+
+        def run():
+            from tests.test_tftp import tftp_get
+
+            for _ in range(50):
+                try:
+                    received.append(
+                        tftp_get("127.0.0.1", TestSwitchRestore.TFTP_TEST_PORT, filename)
+                    )
+                    return
+                except (RuntimeError, OSError, TimeoutError):
+                    time.sleep(0.1)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t
+
+    def test_full_restore_flow(self, monkeypatch):
+        import socket as sk
+
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.random_filename",
+            lambda: "fixed_restore.cfg",
+        )
+
+        # SSH listener so the post-reboot probe finds the "switch back up"
+        listener = sk.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        ssh_probe_port = listener.getsockname()[1]
+
+        received: list[bytes] = []
+        self._fetch_thread("fixed_restore.cfg", received)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=ssh_probe_port,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+            reboot_timeout=10.0,
+            reboot_settle=0.0,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: self.RestoreFake()
+        d.connect()
+
+        result = d.apply_config(SWITCH_CONFIG)
+        listener.close()
+
+        assert "Transfer success." in result
+        assert received and received[0].decode() == SWITCH_CONFIG  # TFTP payload intact
+        # exact CLI sequence issued
+        assert "copy tftp config 1 127.0.0.1 fixed_restore.cfg" in d.transport.sent
+        assert "reload config 1" in d.transport.sent
+        assert "y" in d.transport.sent
+
+    def test_copy_error_surfaces(self, monkeypatch):
+        class CopyFailFake(self.RestoreFake):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy tftp config"):
+                    return f"{cmd}\r\nTFTP: error code 1 (file not found)\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: CopyFailFake()
+        d.connect()
+        with pytest.raises(OperationFailedError, match="rejected the TFTP restore"):
+            d.apply_config(SWITCH_CONFIG)
+
+    def test_no_request_error_includes_cli_output(self, monkeypatch):
+        """The 'no TFTP request' error must include what the switch CLI said."""
+
+        class SilentFailFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy tftp config"):
+                    # benign-looking output that matches no error keyword
+                    return f"{cmd}\r\nConfiguration file transfer initiated.\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        monkeypatch.setattr("app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg")
+        # force a short idle timeout so the test fails fast
+        real_server = SingleFileTFTPServer
+
+        def fast_server(data, filename, **kw):
+            return real_server(data, filename, idle_timeout=0.5, **kw)
+
+        monkeypatch.setattr("app.devices.zyxel_drivers.SingleFileTFTPServer", fast_server)
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=0,  # ephemeral port nothing will reach -> no request
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: SilentFailFake()
+        d.connect()
+        with pytest.raises(OperationFailedError) as exc:
+            d.apply_config(SWITCH_CONFIG)
+        msg = str(exc.value)
+        assert "no TFTP request arrived" in msg
+        # the CLI output we previously discarded must now be visible
+        assert "Configuration file transfer initiated." in msg
+
+    def test_can_not_phrasing_is_detected(self, monkeypatch):
+        """Zyxel's two-word 'Can not' failure phrasing must be caught."""
+
+        class CanNotFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy tftp config"):
+                    return f"{cmd}\r\nCan not open TFTP connection\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        monkeypatch.setattr("app.devices.zyxel_drivers.random_filename", lambda: "tiny.cfg")
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=0,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: CanNotFake()
+        d.connect()
+        with pytest.raises(OperationFailedError, match="rejected the TFTP restore"):
+            d.apply_config(SWITCH_CONFIG)
+
+    def test_tftp_path_test_success(self, monkeypatch):
+        """test_tftp_path: switch pushes config to our WRQ receiver."""
+        from app.devices.tftp import TFTPReceiveServer
+
+        class PushFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    # simulate: switch uploads, then prints success
+                    return f"{cmd}\r\nTransfer success.\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        def fake_receiver(filename: str, **kwargs):
+            class R(TFTPReceiveServer):
+                def __init__(self, fn, **kw):
+                    super().__init__(fn, **kw)
+                    self._received = bytearray(b"pushed-config-bytes")
+
+                def wait(self, timeout: float = 60.0):
+                    return True
+
+            return R(filename, **kwargs)
+
+        monkeypatch.setattr("app.devices.zyxel_drivers.TFTPReceiveServer", fake_receiver)
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: PushFake()
+        d.connect()
+
+        ok, msg = d.test_tftp_path()
+        assert ok, msg
+        assert "TFTP path OK" in msg
+        assert any(s.startswith("copy running-config tftp 127.0.0.1") for s in d.transport.sent)
+
+    def test_tftp_path_test_refused(self, monkeypatch):
+        class RefuseFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
+                if cmd == "show running-config":
+                    return (
+                        f"{cmd}\r\n  Building configuration...\r\n"
+                        f"; Product Name = XS1930-12HP\r\n"
+                        f"; Firmware Version = V4.80(ABQF.4)\r\n"
+                        f"; Service Status = Not Licensed\r\n"
+                        f"vlan 1\r\nsysname# "
+                    )
+                if cmd == "?":
+                    # exact basic-CLI command set observed on a real
+                    # unlicensed XS1930-12HP (V4.80): no `copy`, has `import`
+                    return (
+                        "?\r\n  Commands available:\r\n\r\n  boot\r\n"
+                        "  cable-diagnostics\r\n  clear\r\n  disable\r\n  erase\r\n"
+                        "  exit\r\n  igmp-flush\r\n  import\r\n  locator-led\r\n"
+                        "  logout\r\n  mac-flush\r\n  no\r\n  ping\r\n  ping6\r\n"
+                        "  release\r\n  reload\r\n  renew\r\n  reset\r\n"
+                        "  restart\r\n  service-register\r\n  show\r\n"
+                        "  traceroute\r\n  traceroute6\r\nsysname# "
+                    )
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: RefuseFake()
+        d.connect()
+        ok, msg = d.test_tftp_path()
+        assert not ok
+        assert "switch refused" in msg
+        assert "%Invalid command" in msg
+        # model-aware license explanation from the support matrix
+        assert "restricted basic CLI" in msg
+        assert "XS1930" in msg
+        assert "XS1930-12HP" in msg
+        assert "license" in msg
+        # stale series-specific text from the old message is gone
+        assert "Access L3 license" not in msg
+
+    def test_tftp_path_test_doubled_prompt_probe(self, monkeypatch):
+        """Regression: XS1930 prints the prompt TWICE after a '?' listing.
+
+        The doubled prompt (`XS1930# XS1930# `) can make the prompt-wait time
+        out; the probe must still diagnose from the listing text it received.
+        """
+        from app.devices.transport import TimeoutError_
+
+        class DoubledPromptFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
+                if cmd == "show running-config":
+                    return (
+                        f"{cmd}\r\n; Product Name = XS1930-12HP\r\n"
+                        f"; Service Status = Not Licensed\r\nvlan 1\r\nsysname# "
+                    )
+                if cmd == "?":
+                    # exact behavior observed on the real unlicensed
+                    # XS1930-12HP: listing, then the prompt printed twice
+                    # (DECSC escapes stripped by the transport layer)
+                    raise TimeoutError_(
+                        "Timed out waiting for prompt; last output: "
+                        "' Service register\\r\\n show Show system information\\r\\n"
+                        " traceroute Exec traceroute\\r\\n traceroute6 Exec IPv6 "
+                        "traceroute\\r\\nXS1930# XS1930# '"
+                    )
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: DoubledPromptFake()
+        d.connect()
+        ok, msg = d.test_tftp_path()
+        assert not ok
+        assert "switch refused" in msg
+        # diagnosis extracted from the timed-out probe's partial output,
+        # model-aware via the config header
+        assert "restricted basic CLI" in msg
+        assert "XS1930-12HP" in msg
+        assert "license" in msg
+
+    def test_tftp_path_test_partial_copy_support(self, monkeypatch):
+        """Device has some `copy` subcommands but rejects the TFTP one."""
+
+        class PartialCopyFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy running-config tftp"):
+                    return f"{cmd}\r\nInvalid input detected\r\nsysname# "
+                if cmd == "?":
+                    return (
+                        "?\r\n  copy running-config custom-default\r\n"
+                        "  backup config tftp\r\n  restore config tftp\r\n"
+                        "  show running-config\r\nsysname# "
+                    )
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=self.TFTP_TEST_PORT,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: PartialCopyFake()
+        d.connect()
+        ok, msg = d.test_tftp_path()
+        assert not ok
+        assert "backup config tftp" in msg  # keyword listing, not license text
+        assert "Access L3 license" not in msg
 
 
 class TestFirewallDriver:
@@ -215,6 +561,42 @@ class TestAPDriver:
         cfg = d.get_config()
         assert d.base_prompt.strip().endswith("#")
         assert "interface ge1" in cfg
+
+
+class TestSwitchSupportMatrix:
+    def test_series_extraction(self):
+        from app.devices.switch_support import series_from_model
+
+        assert series_from_model("XS1930-12HP") == "XS1930"
+        assert series_from_model("XS1930") == "XS1930"
+        assert series_from_model("CX4800-56F") == "CX4800"
+        assert series_from_model("XMG1930-30HP") == "XMG1930"  # longest match
+        assert series_from_model("GS1350-12HP") == "GS1350"
+        assert series_from_model("") is None
+        assert series_from_model("UnknownModel") is None
+
+    def test_license_message_restricted_with_license(self):
+        from app.devices.switch_support import license_message
+
+        msg = license_message("XS1930-12HP")
+        assert msg and "XS1930" in msg and "XS1930-12HP" in msg
+        assert "license" in msg and "myzyxel.com" in msg
+
+    def test_license_message_restricted_no_license(self):
+        from app.devices.switch_support import license_message
+
+        msg = license_message("GS1900-24")
+        assert msg and "GS1900" in msg
+        assert "no license can unlock" in msg
+
+    def test_full_cli_models_have_no_message(self):
+        from app.devices.switch_support import license_message
+
+        assert license_message("GS1350-12HP") is None
+        assert license_message("CX4800-56F") is None
+        assert license_message("GS2220-28") is None
+        assert license_message("") is None
+        assert license_message("Unknown-Model") is None
 
 
 class TestFactory:

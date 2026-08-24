@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.base import get_db
-from app.db.models import ConfigSnapshot, Device, User
+from app.db.models import ConfigSnapshot, Device, User, iso
 from app.services import backup
 from app.services.audit import audit
 
@@ -33,7 +33,7 @@ def _snap_out(s: ConfigSnapshot) -> SnapshotOut:
     return SnapshotOut(
         id=s.id,
         device_id=s.device_id,
-        ts=s.ts.isoformat(),
+        ts=iso(s.ts),
         source=s.source,
         config_hash=s.config_hash,
         size_bytes=s.size_bytes,

@@ -7,9 +7,16 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+      # Switch config revert: the device pulls the snapshot from Zynk via TFTP.
+      # Requires a reachable host IP; with bridge networking also set
+      # ZYNK_TFTP_PUBLIC_ADDRESS below to the host's LAN IP.
+      - "69:69/udp"
     volumes:
       - ../data:/data
     environment:
       # Choose the initial admin password (created on first start only)
       ZYNK_INITIAL_ADMIN_PASSWORD: "change-me-now"
       ZYNK_STATUS_POLL_INTERVAL_SECONDS: "300"
+      # IP the switches use to reach this Zynk instance for TFTP restores
+      # (auto-detected when running with host networking / from source)
+      # ZYNK_TFTP_PUBLIC_ADDRESS: "192.168.1.10"

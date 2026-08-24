@@ -23,10 +23,27 @@ SSH sessions; verify against your real hardware before relying on it.
 
 | Family | Models (verified against guide) | Config pull | Revert |
 |---|---|---|---|
-| Switch | All ZyNOS and FaOS based Switches | `show running-config` | not in alpha (needs TFTP + reload) |
+| Switch | All ZyNOS and FaOS based Switches | `show running-config` | yes — TFTP + `copy tftp config` + `reload config` (device reboots) |
 | Firewall (uOS) | All uOS based | `show config running \| no-pager` | not in alpha (needs file staged on device) |
 | Firewall (ZLD) | All ZLD based (ATP & USG ZyWALL) | `show running-config` | yes — FTP upload + `apply /conf/<file> ignore-error rollback` + `write` |
 | Access Point | ZyNOS based | `show running-config` | yes — FTP upload + `apply running-config ... ignore error rollback` + `write` |
+
+> ⚠ **Switch revert reboots the device:** the snapshot is staged over TFTP
+> (Zynk serves it on UDP port 69 — the switch must be able to reach Zynk) and
+> applied with `reload config 1`, a warm reboot. If the restored config changes
+> the management IP, update the device entry afterwards. In Docker, publish
+> `69/udp` and set `ZYNK_TFTP_PUBLIC_ADDRESS` to the host's LAN IP.
+>
+> ⚠ **Switch CLI restrictions by series:** not every Zyxel switch series has the
+> full CLI. Some ship with a restricted *basic* CLI (config pull works, config
+> restore doesn't): the **XS1930/XS1935** and **XMG1930** series need a CLI
+> license from Zyxel (myzyxel.com) to unlock configuration commands, while
+> **GS1900/GS1915/XMG1915/GS1920/XGS1930\*/XGS1935** have no full CLI at all
+> (\*EOL). Series with full CLI out of the box include GS1350, RGS200, GS2220,
+> XGS2220, XMG2230, XGS3700, XS3800, XGS4600, CX3800 and CX4800. Zynk detects
+> the restriction from the config header model name (`; Product Name = …`) and
+> reports a model-specific explanation on Test/Revert. Full matrix:
+> `backend/app/devices/switch_cli_support.csv`.
 
 > ⚠ **End of Life:** ZLD-based devices (USG & ATP series) are in End-of-Life
 > state at Zyxel — no further firmware updates or support. They remain
@@ -94,6 +111,9 @@ cd backend
 | `ZYNK_SSH_CONNECT_TIMEOUT_SECONDS` | `15` | SSH connect timeout |
 | `ZYNK_SSH_COMMAND_TIMEOUT_SECONDS` | `120` | SSH command timeout |
 | `ZYNK_ACCESS_TOKEN_TTL_MINUTES` | `720` | JWT lifetime |
+| `ZYNK_TFTP_PUBLIC_ADDRESS` | *(auto-detect)* | IP switches use to reach Zynk for config restores (set explicitly in Docker) |
+| `ZYNK_TFTP_PORT` | `69` | TFTP listen port for switch restores (UDP) |
+| `ZYNK_SWITCH_REBOOT_TIMEOUT_SECONDS` | `300` | Max time to wait for a switch to come back after `reload config` |
 
 ## Architecture
 

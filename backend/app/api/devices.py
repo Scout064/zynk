@@ -6,12 +6,14 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.core.config import get_settings
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.db.base import get_db
-from app.db.models import Device, DeviceFamily, User
+from app.db.models import Device, DeviceFamily, User, iso
 from app.devices.base import ConnectionSpec, ZyxelDriver
 from app.devices.factory import make_driver
 from app.devices.transport import DriverError
+from app.devices.zyxel_drivers import ZyxelSwitchDriver
 from app.services import backup
 from app.services.audit import audit
 from app.services.status import check_now
@@ -66,7 +68,7 @@ def _device_out(d: Device) -> DeviceOut:
         status = {
             "reachable": d.status.reachable,
             "latency_ms": d.status.latency_ms,
-            "last_checked": d.status.last_checked.isoformat(),
+            "last_checked": iso(d.status.last_checked),
         }
     return DeviceOut(
         id=d.id,
@@ -80,7 +82,7 @@ def _device_out(d: Device) -> DeviceOut:
         enabled=d.enabled,
         notes=d.notes,
         snapshot_count=len(d.snapshots),
-        last_snapshot_ts=latest.ts.isoformat() if latest else None,
+        last_snapshot_ts=iso(latest.ts) if latest else None,
         status=status,
     )
 
@@ -173,11 +175,17 @@ async def test_device(
 ):
     """Test connection + authentication (runs `show version`-equivalent)."""
     device = _get_device(db, device_id)
+    settings = get_settings()
     spec = ConnectionSpec(
         host=device.host,
         port=device.port,
         username=device.username,
         password=decrypt_secret(device.password_enc),
+        connect_timeout=settings.ssh_connect_timeout_seconds,
+        command_timeout=settings.ssh_command_timeout_seconds,
+        tftp_address=settings.tftp_public_address,
+        tftp_port=settings.tftp_port,
+        reboot_timeout=float(settings.switch_reboot_timeout_seconds),
     )
 
     def _probe() -> dict:
@@ -185,20 +193,29 @@ async def test_device(
         try:
             driver.connect()
             alive = driver.check_alive()
-            return {"ok": alive, "message": "Connection and authentication OK"}
+            result = {"ok": alive, "message": "Connection and authentication OK", "tftp": None}
+            if alive and isinstance(driver, ZyxelSwitchDriver):
+                # Verify the TFTP path used for config restores (switch pushes
+                # its running config to a throwaway receiver; nothing modified).
+                tftp_ok, tftp_msg = driver.test_tftp_path()
+                result["tftp"] = {"ok": tftp_ok, "message": tftp_msg}
+            return result
         except DriverError as err:
-            return {"ok": False, "message": f"[{err.kind}] {err}"}
+            return {"ok": False, "message": f"[{err.kind}] {err}", "tftp": None}
         except Exception as err:  # unexpected driver bugs
-            return {"ok": False, "message": f"error: {err}"}
+            return {"ok": False, "message": f"error: {err}", "tftp": None}
         finally:
             driver.close()
 
     result = await anyio.to_thread.run_sync(_probe)
+    detail = result["message"]
+    if result.get("tftp"):
+        detail += f" | TFTP: {result['tftp']['message']}"
     audit(
         db,
         "device.test",
         device.name,
-        result["message"],
+        detail,
         actor=_user.username,
         ok=result["ok"],
     )
@@ -237,5 +254,5 @@ async def check_status(
     return {
         "reachable": status.reachable,
         "latency_ms": status.latency_ms,
-        "last_checked": status.last_checked.isoformat(),
+        "last_checked": iso(status.last_checked),
     }

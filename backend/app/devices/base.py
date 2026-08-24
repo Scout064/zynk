@@ -19,6 +19,11 @@ class ConnectionSpec:
     password: str
     connect_timeout: float = 15.0
     command_timeout: float = 120.0
+    # Switch revert (TFTP): how the device reaches us and how long a reboot may take.
+    tftp_address: str | None = None  # None = auto-detect the source IP toward the device
+    tftp_port: int = 69
+    reboot_timeout: float = 300.0
+    reboot_settle: float = 10.0  # grace period after SSH answers again
 
 
 class ZyxelDriver:
@@ -36,6 +41,7 @@ class ZyxelDriver:
         self.spec = spec
         self.transport: ShellTransport | None = None
         self.base_prompt: str = ""
+        self.detected_model: str | None = None  # from config header, if parsed
 
     # -- helpers for tests ---------------------------------------------------
     def _make_transport(self) -> ShellTransport:
