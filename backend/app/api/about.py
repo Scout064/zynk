@@ -45,7 +45,7 @@ def about(
         "license": LICENSE,
         "repository": REPOSITORY,
         "api_docs": "/docs",
-        "started_at": started_at.isoformat() if started_at else None,
+        "started_at": started_at.isoformat() if started_at else None,  # already aware
         "uptime_seconds": uptime,
         "stats": stats,
         "families": SUPPORTED_FAMILIES,

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.config import get_settings
 from app.db.base import get_db
-from app.db.models import AuditLog, Device, User
+from app.db.models import AuditLog, Device, User, iso
 
 router = APIRouter(prefix="/api", tags=["status"])
 
@@ -35,7 +35,7 @@ def overall_status(_user: User = Depends(get_current_user), db: Session = Depend
         if d.status is not None:
             item["reachable"] = d.status.reachable
             item["latency_ms"] = d.status.latency_ms
-            item["last_checked"] = d.status.last_checked.isoformat()
+            item["last_checked"] = iso(d.status.last_checked)
         out.append(item)
     online = sum(1 for i in out if i["reachable"] is True)
     return {
@@ -57,7 +57,7 @@ def audit_log(
     return [
         {
             "id": e.id,
-            "ts": e.ts.isoformat(),
+            "ts": iso(e.ts),
             "actor": e.actor,
             "action": e.action,
             "target": e.target,

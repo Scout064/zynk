@@ -137,6 +137,9 @@ persisted between checks — a device keeps its last known online/offline state
 until the next check completes; the UI shows how long ago each device was last
 checked. Use *Check Status* on the device page for an immediate probe.
 
+All API timestamps are offset-aware UTC ISO-8601 (`…+00:00`); "checked Xs ago"
+labels are computed in the browser from these.
+
 ### Devices
 Full inventory table with status, snapshot count, last backup time and actions:
 *Test* (SSH login check), *Edit*, *Delete* (removes the device **and all its
@@ -460,7 +463,7 @@ valid.
 | Revert fails with `[failed] Could not upload config to AP (FTP must be enabled…)` | AP revert needs FTP (port 21) enabled on the access point; Zynk uploads via FTP after the SSH session is established. |
 | Switch revert fails with `cannot bind TFTP listener … 69/udp` | Zynk could not bind UDP 69. In Docker publish the port (`-p 69:69/udp`); on Linux as non-root use `setcap cap_net_bind_service` or a port above 1024 via `ZYNK_TFTP_PORT` (only works if the switch firmware supports non-standard TFTP ports — usually it does not). |
 | Switch revert fails with `TFTP transfer failed: no TFTP request arrived` | The switch never connected back to Zynk; the error message includes the switch's actual CLI output — read it first. The device pulls FROM Zynk: verify it can route to `ZYNK_TFTP_PUBLIC_ADDRESS` (or the auto-detected IP) on UDP 69 — in Docker bridge mode you must set `ZYNK_TFTP_PUBLIC_ADDRESS` to the host's LAN IP. Use the device **Test** button: for switches it additionally runs a TFTP path check (`copy running-config tftp …` — the switch pushes to a throwaway receiver; nothing is modified) which tells you immediately whether the UDP path works. |
-| Switch revert fails with `%Invalid command "copy"` / switch refused | **XS1930 license restriction**: this series ships with a restricted basic CLI — `copy tftp config` (and `copy running-config tftp`) only exist with the **Access L3 license** activated (myzyxel.com; CLI guide §1.1, Table 4). Config *pull* works on the basic CLI; config *restore* needs the license. Other series (GS1350, CX4800, …) have the full CLI without a license. The error message includes the switch's `help` output showing which commands it does have. |
+| Switch revert fails with `%Invalid command "copy"` / switch refused | **Switch series CLI restriction** — the model (parsed from the config header `; Product Name = …` at pull time) determines the explanation: **XS1930/XS1935/XMG1930** ship with a restricted basic CLI and need a CLI license from Zyxel (myzyxel.com) for configuration commands; **GS1900/GS1915/XMG1915/GS1920/XGS1930/XGS1935** have no full CLI and no license can unlock it. Config *pull* works in all cases; config *restore* needs the full CLI. Series with full CLI out of the box: GS1350, RGS200, GS2220, XGS2220, XMG2230, XGS3700, XS3800, XGS4600, CX3800, CX4800. Full matrix: `backend/app/devices/switch_cli_support.csv`. The error message includes the switch's `?` listing showing which commands it does have. |
 | Switch revert fails with `Switch did not come back within …s` | The warm reboot after `reload config 1` exceeded `ZYNK_SWITCH_REBOOT_TIMEOUT_SECONDS`. Check whether the restored config changed the management IP (update the device entry if so) or the device is stuck. |
 | Switch revert succeeded but the confirmation pull shows an empty/old config | If the restored config changed the management IP or credentials, the post-revert pull hits the old address — update the device entry and pull again. |
 | `git_commit` is `null` on new snapshots | `git` is missing or broken in the runtime; storage degrades to plain files (snapshots still work). Install git and future pulls will commit. |

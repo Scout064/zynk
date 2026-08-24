@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.base import get_db
-from app.db.models import Schedule, ScheduleScope, User
+from app.db.models import Schedule, ScheduleScope, User, iso
 from app.scheduler import jobs
 from app.services.audit import audit
 
@@ -58,8 +58,8 @@ def _sched_out(s: Schedule) -> ScheduleOut:
         scope=s.scope,
         targets=s.targets or [],
         enabled=s.enabled,
-        last_run=s.last_run.isoformat() if s.last_run else None,
-        next_run=nr.isoformat() if nr else None,
+        last_run=iso(s.last_run),
+        next_run=iso(nr),
     )
 
 
@@ -145,4 +145,4 @@ async def run_now(
     await jobs.run_backup_job(schedule_id)
     db.expire_all()
     s = db.get(Schedule, schedule_id)
-    return {"ok": True, "last_run": s.last_run.isoformat() if s and s.last_run else None}
+    return {"ok": True, "last_run": iso(s.last_run) if s else None}

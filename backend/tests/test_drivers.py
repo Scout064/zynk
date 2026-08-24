@@ -331,6 +331,14 @@ class TestSwitchRestore:
                 cmd = self.sent[-1] if self.sent else ""
                 if cmd.startswith("copy running-config tftp"):
                     return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
+                if cmd == "show running-config":
+                    return (
+                        f"{cmd}\r\n  Building configuration...\r\n"
+                        f"; Product Name = XS1930-12HP\r\n"
+                        f"; Firmware Version = V4.80(ABQF.4)\r\n"
+                        f"; Service Status = Not Licensed\r\n"
+                        f"vlan 1\r\nsysname# "
+                    )
                 if cmd == "?":
                     # exact basic-CLI command set observed on a real
                     # unlicensed XS1930-12HP (V4.80): no `copy`, has `import`
@@ -359,9 +367,13 @@ class TestSwitchRestore:
         assert not ok
         assert "switch refused" in msg
         assert "%Invalid command" in msg
-        # basic-CLI signature -> license explanation, not just 'import'
+        # model-aware license explanation from the support matrix
         assert "restricted basic CLI" in msg
-        assert "Access L3 license" in msg
+        assert "XS1930" in msg
+        assert "XS1930-12HP" in msg
+        assert "license" in msg
+        # stale series-specific text from the old message is gone
+        assert "Access L3 license" not in msg
 
     def test_tftp_path_test_doubled_prompt_probe(self, monkeypatch):
         """Regression: XS1930 prints the prompt TWICE after a '?' listing.
@@ -376,6 +388,11 @@ class TestSwitchRestore:
                 cmd = self.sent[-1] if self.sent else ""
                 if cmd.startswith("copy running-config tftp"):
                     return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
+                if cmd == "show running-config":
+                    return (
+                        f"{cmd}\r\n; Product Name = XS1930-12HP\r\n"
+                        f"; Service Status = Not Licensed\r\nvlan 1\r\nsysname# "
+                    )
                 if cmd == "?":
                     # exact behavior observed on the real unlicensed
                     # XS1930-12HP: listing, then the prompt printed twice
@@ -401,9 +418,11 @@ class TestSwitchRestore:
         ok, msg = d.test_tftp_path()
         assert not ok
         assert "switch refused" in msg
-        # diagnosis extracted from the timed-out probe's partial output
+        # diagnosis extracted from the timed-out probe's partial output,
+        # model-aware via the config header
         assert "restricted basic CLI" in msg
-        assert "Access L3 license" in msg
+        assert "XS1930-12HP" in msg
+        assert "license" in msg
 
     def test_tftp_path_test_partial_copy_support(self, monkeypatch):
         """Device has some `copy` subcommands but rejects the TFTP one."""
@@ -542,6 +561,42 @@ class TestAPDriver:
         cfg = d.get_config()
         assert d.base_prompt.strip().endswith("#")
         assert "interface ge1" in cfg
+
+
+class TestSwitchSupportMatrix:
+    def test_series_extraction(self):
+        from app.devices.switch_support import series_from_model
+
+        assert series_from_model("XS1930-12HP") == "XS1930"
+        assert series_from_model("XS1930") == "XS1930"
+        assert series_from_model("CX4800-56F") == "CX4800"
+        assert series_from_model("XMG1930-30HP") == "XMG1930"  # longest match
+        assert series_from_model("GS1350-12HP") == "GS1350"
+        assert series_from_model("") is None
+        assert series_from_model("UnknownModel") is None
+
+    def test_license_message_restricted_with_license(self):
+        from app.devices.switch_support import license_message
+
+        msg = license_message("XS1930-12HP")
+        assert msg and "XS1930" in msg and "XS1930-12HP" in msg
+        assert "license" in msg and "myzyxel.com" in msg
+
+    def test_license_message_restricted_no_license(self):
+        from app.devices.switch_support import license_message
+
+        msg = license_message("GS1900-24")
+        assert msg and "GS1900" in msg
+        assert "no license can unlock" in msg
+
+    def test_full_cli_models_have_no_message(self):
+        from app.devices.switch_support import license_message
+
+        assert license_message("GS1350-12HP") is None
+        assert license_message("CX4800-56F") is None
+        assert license_message("GS2220-28") is None
+        assert license_message("") is None
+        assert license_message("Unknown-Model") is None
 
 
 class TestFactory:

@@ -7,6 +7,7 @@ import os
 import re
 
 from app.devices.base import ZyxelDriver
+from app.devices.switch_support import license_message
 from app.devices.tftp import (
     SingleFileTFTPServer,
     TFTPError,
@@ -60,6 +61,8 @@ class ZyxelSwitchDriver(ZyxelDriver):
     family = "switch"
     prompt_re = SWITCH_PROMPT_RE
     RELOAD_CONFIRM_RE = re.compile(r"\[y/N\]\s*$", re.IGNORECASE)
+    # Config header lines, e.g. `; Product Name = XS1930-12HP`
+    PRODUCT_NAME_RE = re.compile(r";\s*Product Name\s*=\s*(\S+)", re.IGNORECASE)
     # Broad CLI-failure detection: Zyxel phrasings vary across firmware
     # ("Can not", "Illegal parameter", "Invalid input", "TFTP fail", ...).
     TFTP_ERROR_RE = re.compile(
@@ -76,7 +79,29 @@ class ZyxelSwitchDriver(ZyxelDriver):
         out = self.run("show running-config")
         if not out.strip():
             raise DriverError("Device returned an empty configuration")
+        # Remember the model from the config header (e.g. XS1930-12HP) so
+        # license diagnostics can be model-specific.
+        m = self.PRODUCT_NAME_RE.search(out)
+        if m:
+            self.detected_model = m.group(1)
         return out
+
+    def _license_hint(self) -> str:
+        model = getattr(self, "detected_model", None) or ""
+        msg = license_message(model)
+        if msg:
+            return msg
+        if model:
+            return (
+                f"no 'copy' command found in the '?' listing for model {model}. "
+                f"This is unexpected — the {model} series should have the full CLI. "
+                f"Check the device (license state, firmware) or report this."
+            )
+        return (
+            "no 'copy' command in the '?' listing and no model detected yet — "
+            "run a config pull first so the model from the config header "
+            "(; Product Name = ...) is known."
+        )
 
     def check_alive(self) -> bool:
         out = self.run("show version", timeout=30)
@@ -125,9 +150,9 @@ class ZyxelSwitchDriver(ZyxelDriver):
         Runs `?` (enable mode) — read-only — and returns the matching command
         lines. Used when the documented `copy` syntax is rejected. Absence of
         any `copy` command combined with the basic command set
-        (import/reload/show) identifies the XS1930 series restricted basic
-        CLI — full CLI configuration (incl. copy tftp config) requires the
-        Access L3 license (guide §1.1, Table 4).
+        (import/reload/show) identifies a restricted basic CLI — the
+        model-specific explanation comes from the switch CLI support matrix
+        (switch_cli_support.csv).
         """
         out = ""
         timeout_err = None
@@ -148,14 +173,7 @@ class ZyxelSwitchDriver(ZyxelDriver):
         def diagnose(text: str) -> str | None:
             has_copy = re.search(r"\bcopy\b", text, re.IGNORECASE)
             if not has_copy and re.search(r"\b(import|reload|show)\b", text, re.IGNORECASE):
-                return (
-                    "restricted basic CLI detected — no 'copy' command at all. The "
-                    "XS1930 series ships with a restricted basic CLI; full CLI "
-                    "configuration (incl. copy tftp config) requires the Access L3 "
-                    "license from Zyxel (myzyxel.com, CLI guide §1.1). Config pull "
-                    "works, config restore does not. GS1350/CX4800 series have the "
-                    "full CLI without a license."
-                )
+                return f"restricted basic CLI detected — {self._license_hint()}"
             return None
 
         diagnosis = diagnose(out)
@@ -252,6 +270,16 @@ class ZyxelSwitchDriver(ZyxelDriver):
             try:
                 out = self.run(f"copy running-config tftp {tftp_addr} {filename}", timeout=90)
                 if self.TFTP_ERROR_RE.search(out):
+                    # Capture the model from the config header (if unknown yet)
+                    # so the diagnosis is model-specific.
+                    if not getattr(self, "detected_model", None):
+                        try:
+                            cfg = self.run("show running-config", timeout=60)
+                            m = self.PRODUCT_NAME_RE.search(cfg)
+                            if m:
+                                self.detected_model = m.group(1)
+                        except DriverError:
+                            pass
                     probe = self._probe_backup_commands()
                     return False, (
                         f"switch refused: {out.strip()!r}. This firmware may not "
