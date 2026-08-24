@@ -20,6 +20,7 @@ from app.devices.transport import (
     OperationFailedError,
     TimeoutError_,
     UnreachableError,
+    ftp_upload,
     scp_upload_dedicated,
     sftp_upload_dedicated,
 )
@@ -383,20 +384,23 @@ class ZyxelFirewallDriver(ZyxelDriver):
                 errors.append(f"{method}: {err}")
             except Exception as err:  # paramiko garbage packets etc.
                 errors.append(f"{method}: {err.__class__.__name__}: {err}")
-        # FTP fallback — same pattern as the AP/ZLD drivers
-        import ftplib
-        import io
-
-        try:
-            ftp = ftplib.FTP(timeout=30)
-            ftp.connect(self.spec.host, 21)
-            ftp.login(self.spec.username, self.spec.password)
-            ftp.set_pasv(True)
-            ftp.storbinary(f"STOR {remote_path}", io.BytesIO(config_text.encode("utf-8")))
-            ftp.quit()
-            return "ftp"
-        except (*ftplib.all_errors, OSError) as err:
-            errors.append(f"ftp: {err}")
+        # FTP fallback — the documented uOS file-upload service. The CLI
+        # guide's own FTP example uses ACTIVE mode (PORT); many embedded FTP
+        # servers sit behind NAT/firewalls that break passive data channels,
+        # so try active first, then passive.
+        for pasv in (False, True):
+            try:
+                ftp_upload(
+                    host=self.spec.host,
+                    user=self.spec.username,
+                    password=self.spec.password,
+                    remote_path=remote_path,
+                    data=config_text.encode("utf-8"),
+                    passive=pasv,
+                )
+                return "ftp" + (" (passive)" if pasv else " (active)")
+            except Exception as err:
+                errors.append(f"ftp {'passive' if pasv else 'active'}: {err}")
         raise OperationFailedError(
             "Could not upload the config to the firewall — all transfer methods "
             f"failed ({'; '.join(errors)}). If SFTP/SCP are not available on this "

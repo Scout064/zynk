@@ -598,21 +598,16 @@ class TestFirewallRestore:
         monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", fail)
         monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", fail)
 
-        import ftplib
+        calls: list[tuple[str, bool]] = []
 
-        stored: dict[str, bytes] = {}
+        def fake_ftp_upload(*, host, user, password, remote_path, data, passive, **kw):
+            calls.append((remote_path, passive))
+            if passive:
+                raise ConnectionRefusedError("passive blocked")  # active works first
 
-        class FakeFTP:
-            def __init__(self, timeout=None): ...
-            def connect(self, host, port): ...
-            def login(self, u, p): ...
-            def set_pasv(self, v): ...
-            def storbinary(self, cmd, data):
-                stored[cmd] = data.read()
-
-            def quit(self): ...
-
-        monkeypatch.setattr(ftplib, "FTP", FakeFTP)
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.ftp_upload", fake_ftp_upload
+        )
         d = make_fake_driver("firewall", {}, "usgflex700h> ")
         fake = self.FirewallFake()
         fake.responses = {
@@ -623,7 +618,40 @@ class TestFirewallRestore:
         d.connect()
         out = d.apply_config(FIREWALL_CONFIG)
         assert "message OK" in out  # restore completed via FTP
-        assert stored["STOR /conf/zynkabcdef.conf"] == FIREWALL_CONFIG.encode()
+        # active mode tried first (matches the CLI guide examples)
+        assert calls == [("/conf/zynkabcdef.conf", False)]
+        d.close()
+
+    def test_ftp_active_fails_passive_tried(self, monkeypatch):
+        monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
+
+        def fail(*a, **kw):
+            raise DriverError("nope")
+
+        monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", fail)
+        monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", fail)
+
+        calls: list[bool] = []
+
+        def fake_ftp_upload(*, passive, **kw):
+            calls.append(passive)
+            if not passive:
+                raise ConnectionRefusedError("active blocked")
+
+        monkeypatch.setattr(
+            "app.devices.zyxel_drivers.ftp_upload", fake_ftp_upload
+        )
+        d = make_fake_driver("firewall", {}, "usgflex700h> ")
+        fake = self.FirewallFake()
+        fake.responses = {
+            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-apply zynkabcdef.conf": self.APPLY_OK,
+        }
+        d._make_transport = lambda: fake
+        d.connect()
+        out = d.apply_config(FIREWALL_CONFIG)
+        assert "message OK" in out
+        assert calls == [False, True]  # active failed, passive succeeded
         d.close()
 
     def test_all_transfers_fail_gives_guidance(self, monkeypatch):
@@ -635,14 +663,10 @@ class TestFirewallRestore:
         monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", fail)
         monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", fail)
 
-        import ftplib
+        def refused(**kw):
+            raise ConnectionRefusedError("timed out")
 
-        class RefusedFTP:
-            def __init__(self, timeout=None): ...
-            def connect(self, host, port):
-                raise ConnectionRefusedError("refused")
-
-        monkeypatch.setattr(ftplib, "FTP", RefusedFTP)
+        monkeypatch.setattr("app.devices.zyxel_drivers.ftp_upload", refused)
         d = make_fake_driver("firewall", {}, "usgflex700h> ")
         fake = self.FirewallFake()
         d._make_transport = lambda: fake
@@ -652,6 +676,9 @@ class TestFirewallRestore:
         msg = str(exc.value)
         assert "all transfer methods failed" in msg
         assert "Garbage packet received" in msg  # original error included
+        # both FTP modes attempted and reported
+        assert "ftp active: timed out" in msg
+        assert "ftp passive: timed out" in msg
         # actionable guidance with the exact device commands
         assert "vrf main ftp-server enabled true" in msg
         assert "commit" in msg
