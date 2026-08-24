@@ -122,6 +122,38 @@ class TestSwitchDriver:
         with pytest.raises(OperationFailedError):
             Bare(spec).apply_config("x")
 
+    def test_revert_diagnoses_model_from_snapshot(self, monkeypatch):
+        """Revert parses the model from the restored config's own header."""
+        monkeypatch.setattr("app.devices.zyxel_drivers.random_filename", lambda: "fixed.cfg")
+
+        class CopyFailFake(FakeTransport):
+            def read_until(self, pattern, timeout: float = 60.0):
+                cmd = self.sent[-1] if self.sent else ""
+                if cmd.startswith("copy tftp config"):
+                    return f'{cmd}\r\n%Invalid command "copy"\r\nsysname# '
+                if cmd == "?":
+                    return "?\r\n  import\r\n  reload\r\n  show\r\nsysname# "
+                return super().read_until(pattern, timeout)
+
+        spec = ConnectionSpec(
+            host="127.0.0.1",
+            port=22,
+            username="admin",
+            password="pw",
+            tftp_port=0,
+        )
+        d = make_driver(spec, "switch")
+        d._make_transport = lambda: CopyFailFake()
+        d.connect()
+        assert d.detected_model is None  # no pull happened this session
+        snapshot = "  Current configuration:\n\n; Product Name = XS1935-10\nvlan 1\n"
+        with pytest.raises(OperationFailedError) as exc:
+            d.apply_config(snapshot)
+        msg = str(exc.value)
+        # dynamic model from the snapshot header, not a hardcoded one
+        assert "XS1935-10" in msg
+        assert "XS1930" not in msg
+
 
 class TestSwitchRestore:
     """Integration: driver + real TFTP server + scripted SSH reload flow."""
@@ -581,6 +613,24 @@ class TestSwitchSupportMatrix:
         msg = license_message("XS1930-12HP")
         assert msg and "XS1930" in msg and "XS1930-12HP" in msg
         assert "license" in msg and "myzyxel.com" in msg
+
+    def test_license_message_is_model_dynamic(self):
+        """The message must reflect the actually-detected model."""
+        from app.devices.switch_support import license_message
+
+        for model, series in [
+            ("XS1930-12HP", "XS1930"),
+            ("XS1935-10", "XS1935"),
+            ("XMG1930-30HP", "XMG1930"),
+        ]:
+            msg = license_message(model)
+            assert msg, model
+            assert f"the model {model}" in msg, model
+            assert msg.startswith(f"The {series} series"), model
+
+        # EOL series gets the EOL note
+        assert "End of Life" in license_message("XMG1930-30HP")
+        assert "End of Life" not in license_message("XS1930-12HP")
 
     def test_license_message_restricted_no_license(self):
         from app.devices.switch_support import license_message

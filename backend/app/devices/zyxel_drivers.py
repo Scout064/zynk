@@ -81,13 +81,16 @@ class ZyxelSwitchDriver(ZyxelDriver):
             raise DriverError("Device returned an empty configuration")
         # Remember the model from the config header (e.g. XS1930-12HP) so
         # license diagnostics can be model-specific.
-        m = self.PRODUCT_NAME_RE.search(out)
-        if m:
-            self.detected_model = m.group(1)
+        self._remember_model(out)
         return out
 
+    def _remember_model(self, config_text: str) -> None:
+        m = self.PRODUCT_NAME_RE.search(config_text)
+        if m:
+            self.detected_model = m.group(1)
+
     def _license_hint(self) -> str:
-        model = getattr(self, "detected_model", None) or ""
+        model = self.detected_model or ""
         msg = license_message(model)
         if msg:
             return msg
@@ -98,9 +101,9 @@ class ZyxelSwitchDriver(ZyxelDriver):
                 f"Check the device (license state, firmware) or report this."
             )
         return (
-            "no 'copy' command in the '?' listing and no model detected yet — "
-            "run a config pull first so the model from the config header "
-            "(; Product Name = ...) is known."
+            "no 'copy' command in the '?' listing and no model detected — "
+            "the model is parsed from the config header "
+            "(; Product Name = ...); run a config pull first."
         )
 
     def check_alive(self) -> bool:
@@ -194,6 +197,9 @@ class ZyxelSwitchDriver(ZyxelDriver):
 
         Destructive: the switch warm-reboots with the staged configuration.
         """
+        # Model for diagnostics comes from the snapshot's own config header
+        # (this session never ran get_config).
+        self._remember_model(config_text)
         tftp_addr = self._tftp_address()
         filename = random_filename()
         log.info(
@@ -272,12 +278,9 @@ class ZyxelSwitchDriver(ZyxelDriver):
                 if self.TFTP_ERROR_RE.search(out):
                     # Capture the model from the config header (if unknown yet)
                     # so the diagnosis is model-specific.
-                    if not getattr(self, "detected_model", None):
+                    if not self.detected_model:
                         try:
-                            cfg = self.run("show running-config", timeout=60)
-                            m = self.PRODUCT_NAME_RE.search(cfg)
-                            if m:
-                                self.detected_model = m.group(1)
+                            self._remember_model(self.run("show running-config", timeout=60))
                         except DriverError:
                             pass
                     probe = self._probe_backup_commands()

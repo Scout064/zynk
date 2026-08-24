@@ -53,6 +53,7 @@ export default function Devices() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [testResult, setTestResult] = useState<Record<string, string>>({});
+  const [activeTag, setActiveTag] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -65,6 +66,11 @@ export default function Devices() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const allTags = [...new Set(devices.flatMap((d) => d.tags))].sort();
+  const visibleDevices = activeTag
+    ? devices.filter((d) => d.tags.includes(activeTag))
+    : devices;
 
   function openCreate() {
     setEditing(null);
@@ -152,6 +158,35 @@ export default function Devices() {
           </Button>
         }
       />
+
+      {allTags.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="text-xs uppercase tracking-wide text-zinc-500">Filter:</span>
+          <button
+            onClick={() => setActiveTag(null)}
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+              activeTag === null
+                ? "border-indigo-500 bg-indigo-950/50 text-indigo-300"
+                : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            All ({devices.length})
+          </button>
+          {allTags.map((t) => (
+            <button
+              key={t}
+              onClick={() => setActiveTag(activeTag === t ? null : t)}
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                activeTag === t
+                  ? "border-indigo-500 bg-indigo-950/50 text-indigo-300"
+                  : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {t} ({devices.filter((d) => d.tags.includes(t)).length})
+            </button>
+          ))}
+        </div>
+      )}
 
       {showForm && (
         <Card className="mb-6 p-5">
@@ -244,6 +279,10 @@ export default function Devices() {
             hint="Add a switch, firewall or access point to begin."
           />
         </Card>
+      ) : visibleDevices.length === 0 ? (
+        <Card>
+          <EmptyState title={`No devices with tag "${activeTag}"`} />
+        </Card>
       ) : (
         <Card>
           <table className="w-full text-left text-sm">
@@ -258,7 +297,7 @@ export default function Devices() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/70">
-              {devices.map((d) => (
+              {visibleDevices.map((d) => (
                 <tr key={d.id} className="hover:bg-zinc-800/30">
                   <td className="px-5 py-3">
                     <StatusDot reachable={d.status?.reachable ?? null} />
@@ -270,6 +309,7 @@ export default function Devices() {
                     <p className="text-xs text-zinc-500">
                       {d.host}:{d.port}
                       {d.model && ` · ${d.model}`}
+                      {d.tags.length > 0 && ` · ${d.tags.join(", ")}`}
                     </p>
                     {testResult[d.id] && (
                       <p className={`mt-1 text-xs ${testResult[d.id] === "testing…" ? "text-zinc-500" : "text-indigo-300"}`}>

@@ -40,6 +40,27 @@ class TestNormalize:
         out = backup.normalize_config(raw)
         assert out == "line1\nline2\nline3\n"
 
+    def test_strips_config_preamble(self):
+        """Switch CLI preamble must not enter snapshots (revert would fail)."""
+        raw = (
+            "Building configuration...\n"
+            "\n"
+            "  Current configuration:\n"
+            "\n"
+            "; Product Name = XS1930-12HP\n"
+            "vlan 1\n"
+        )
+        out = backup.normalize_config(raw)
+        assert out == "; Product Name = XS1930-12HP\nvlan 1\n"
+
+    def test_preamble_without_building_line(self):
+        raw = "  Current configuration:\n\nvlan 1\n"
+        assert backup.normalize_config(raw) == "vlan 1\n"
+
+    def test_no_preamble_untouched(self):
+        raw = "vlan 1\n name default\n"
+        assert backup.normalize_config(raw) == raw
+
     def test_trailing_whitespace(self):
         assert backup.normalize_config("a  \nb\n\n\n") == "a\nb\n"
 
@@ -98,6 +119,37 @@ class TestPull:
 
 
 class TestDiffExport:
+    def test_snapshot_text_strips_stored_preamble(self, db):
+        """Snapshots stored before the preamble fix must read back clean.
+
+        Writes a raw file with preamble directly into the config store
+        (as the pre-fix code would have stored it) and checks the read path.
+        """
+        from app.core.config import get_settings
+        from app.db.models import ConfigSnapshot as Snap
+
+        device = make_device(db)
+        rel = f"{device.id}/20200101-000000-deadbeef.cfg"
+        path = get_settings().config_repo_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "Building configuration...\n\n  Current configuration:\n\n"
+            "; Product Name = XS1930-12HP\nvlan 1\n",
+            encoding="utf-8",
+        )
+        snap = Snap(
+            device_id=device.id,
+            rel_path=rel,
+            config_hash="x" * 64,
+            size_bytes=10,
+        )
+        db.add(snap)
+        db.commit()
+        text = backup.snapshot_text(snap)
+        assert "Building configuration" not in text
+        assert "Current configuration" not in text
+        assert text == "; Product Name = XS1930-12HP\nvlan 1\n"
+
     def test_diff(self, db, monkeypatch):
         device = make_device(db)
         outputs = iter([CONFIG_V1, CONFIG_V2])

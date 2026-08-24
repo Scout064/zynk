@@ -9,6 +9,7 @@ SSH sessions; verify against your real hardware before relying on it.
 ## Features (alpha)
 
 - Device inventory (switches, firewalls, access points) with encrypted credential storage
+  and tag-based filtering
 - Manual and scheduled (cron) config pulls via SSH
 - Snapshot history with content-hash dedup (unchanged configs are not re-stored)
 - Config storage in a **git repository** (folder per device) + SQLite index

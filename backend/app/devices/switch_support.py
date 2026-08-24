@@ -44,7 +44,12 @@ def series_from_model(model: str) -> str | None:
 
 
 def license_message(model: str) -> str | None:
-    """CLI restriction explanation for a switch model, or None if unrestricted."""
+    """CLI restriction explanation for a switch model, or None if unrestricted.
+
+    The message is built from the actually-detected model (e.g. parsed from
+    the config header `; Product Name = <model>`), so series and model in the
+    text always match the real device.
+    """
     _load()
     series = series_from_model(model)
     if series is None:
@@ -52,6 +57,7 @@ def license_message(model: str) -> str | None:
     info = _SERIES_INFO[series]
     if info["full_cli"]:
         return None
+    eol = " Note: this series is End of Life at Zyxel." if info["note"] == "EOL" else ""
     # restricted CLI
     if info["license_needed_for_cli"]:
         return (
@@ -59,11 +65,11 @@ def license_message(model: str) -> str | None:
             f"{model} cannot run configuration commands (incl. copy tftp config) "
             f"until the CLI license from Zyxel (myzyxel.com) is activated. "
             f"Config pull (show running-config) works without the license; "
-            f"config restore does not."
+            f"config restore does not.{eol}"
         )
     return (
         f"The {series} series ({model}) has no full CLI and no license can "
         f"unlock one — CLI configuration commands (incl. copy tftp config) are "
         f"not available on this model. Config pull (show running-config) works; "
-        f"config restore is not possible via CLI."
+        f"config restore is not possible via CLI.{eol}"
     )

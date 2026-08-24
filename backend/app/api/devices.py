@@ -95,8 +95,16 @@ def _get_device(db: Session, device_id: str) -> Device:
 
 
 @router.get("", response_model=list[DeviceOut])
-def list_devices(_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return [_device_out(d) for d in db.query(Device).order_by(Device.name).all()]
+def list_devices(
+    tag: str | None = None,
+    _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List devices, optionally filtered by tag (`?tag=core`)."""
+    devices = db.query(Device).order_by(Device.name).all()
+    if tag:
+        devices = [d for d in devices if tag in (d.tags or [])]
+    return [_device_out(d) for d in devices]
 
 
 @router.post("", response_model=DeviceOut, status_code=201)

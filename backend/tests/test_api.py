@@ -37,7 +37,7 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def make_device_row(name="sw1", family="switch") -> str:
+def make_device_row(name="sw1", family="switch", tags=None) -> str:
     db = session_scope()
     try:
         d = Device(
@@ -46,12 +46,32 @@ def make_device_row(name="sw1", family="switch") -> str:
             family=family,
             username="admin",
             password_enc=encrypt_secret("pw"),
+            tags=tags or [],
         )
         db.add(d)
         db.commit()
         return d.id
     finally:
         db.close()
+
+
+class TestTagFilter:
+    def test_filter_by_tag(self, client: TestClient, auth_headers):
+        make_device_row("sw-core", tags=["core", "office"])
+        make_device_row("sw-edge", tags=["edge"])
+        make_device_row("fw", tags=["core"])
+
+        all_devs = client.get("/api/devices", headers=auth_headers).json()
+        assert len(all_devs) == 3
+
+        core = client.get("/api/devices", params={"tag": "core"}, headers=auth_headers).json()
+        assert {d["name"] for d in core} == {"sw-core", "fw"}
+
+        edge = client.get("/api/devices", params={"tag": "edge"}, headers=auth_headers).json()
+        assert {d["name"] for d in edge} == {"sw-edge"}
+
+        none = client.get("/api/devices", params={"tag": "nope"}, headers=auth_headers).json()
+        assert none == []
 
 
 class TestAuth:
@@ -155,7 +175,7 @@ class TestAbout:
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "Zynk"
-        assert data["version"] == "0.4.0"
+        assert data["version"] == "0.5.0"
         assert data["license"] == "MIT"
         assert data["repository"].startswith("https://github.com/")
         assert data["stats"]["devices"] == 1
@@ -175,7 +195,7 @@ class TestAbout:
     def test_health_includes_version(self, client: TestClient):
         resp = client.get("/api/health")
         assert resp.status_code == 200
-        assert resp.json()["version"] == "0.4.0"
+        assert resp.json()["version"] == "0.5.0"
 
 
 class TestStatusAndAudit:

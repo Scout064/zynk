@@ -25,8 +25,22 @@ _NOISE_PATTERNS = (
     re.compile(r"^\s*:\s*$"),
 )
 
+# CLI preamble the switch prints before the actual configuration content
+# ("Building configuration..." / "Current configuration:"). These lines are
+# CLI output, NOT config statements — a config file containing them is
+# rejected by the device on restore, so they must never enter a snapshot.
+_CONFIG_PREAMBLE_RE = re.compile(
+    r"^\s*(?:Building configuration\.\.\.\s*\n)?\s*Current configuration:\s*\n"
+)
+
+
+def strip_config_preamble(text: str) -> str:
+    """Remove the CLI preamble if present (idempotent)."""
+    return _CONFIG_PREAMBLE_RE.sub("", text, count=1)
+
 
 def normalize_config(text: str) -> str:
+    text = strip_config_preamble(text)
     lines = []
     for ln in text.splitlines():
         if any(p.search(ln) for p in _NOISE_PATTERNS):
@@ -153,7 +167,9 @@ def pull_config(
 
 
 def snapshot_text(snapshot: ConfigSnapshot) -> str:
-    return gitstore.read_file(snapshot.rel_path)
+    # Strip on read as well: snapshots stored before the preamble fix would
+    # otherwise fail on restore (the device rejects the CLI preamble lines).
+    return strip_config_preamble(gitstore.read_file(snapshot.rel_path))
 
 
 def diff_snapshots(a: ConfigSnapshot, b: ConfigSnapshot) -> str:

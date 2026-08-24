@@ -143,7 +143,9 @@ labels are computed in the browser from these.
 ### Devices
 Full inventory table with status, snapshot count, last backup time and actions:
 *Test* (SSH login check), *Edit*, *Delete* (removes the device **and all its
-snapshots**), and links into the per-device history page.
+snapshots**), and links into the per-device history page. If any device has
+tags, a filter bar above the table narrows the list by tag (click a tag chip
+again to clear it); `GET /api/devices?tag=<name>` does the same via the API.
 
 ### Device detail
 - Header card: status, host:port, family, model, tags, *Check Status*,
@@ -204,7 +206,7 @@ Expired/invalid tokens yield `401`; the frontend then redirects to the login pag
 
 | Method & Path | Body | Result |
 |---|---|---|
-| `GET /devices` | — | `DeviceOut[]` (incl. snapshot count, last snapshot, status) |
+| `GET /devices` | — | `DeviceOut[]` (incl. snapshot count, last snapshot, status); optional `?tag=<name>` filters by tag |
 | `POST /devices` | `DeviceIn` | `201 DeviceOut` |
 | `GET /devices/{id}` | — | `DeviceOut` |
 | `PUT /devices/{id}` | `DeviceIn` | `DeviceOut` (empty `password` keeps stored credential) |
@@ -336,9 +338,17 @@ Prompt patterns (used to detect command completion):
 - AP: `Router>`, `Router#`, `Router(config)#`; the driver sends `enable` when it
   lands in user mode.
 
-Pulled output is normalized before storage: pager remnants (`-- more --`,
-`Press any key…`, lone `:` lines) and trailing whitespace are stripped, and the
-echoed command and trailing prompt are removed.
+Pulled output is normalized before storage: the CLI preamble
+(`Building configuration…` / `Current configuration:`) is stripped — these are
+CLI output lines, not config statements, and a config file containing them
+would be rejected by the device on restore — as are pager remnants
+(`-- more --`, `Press any key…`, lone `:` lines) and trailing whitespace; the
+echoed command and trailing prompt are removed. The config header comment
+lines (`; Product Name = …`) are kept — they are valid config comments and
+Zynk parses the model from them for diagnostics. Snapshots stored before the
+preamble fix are stripped again on read, so old snapshots also restore cleanly
+(views/diffs of old snapshots show the stripped form as well; the next pull
+of an unchanged config stores one re-normalized snapshot).
 
 ### Adding a new family/model
 
