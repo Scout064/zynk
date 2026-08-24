@@ -20,6 +20,8 @@ from app.devices.transport import (
     OperationFailedError,
     TimeoutError_,
     UnreachableError,
+    scp_upload_dedicated,
+    sftp_upload_dedicated,
 )
 
 log = logging.getLogger("zynk.drivers")
@@ -353,8 +355,58 @@ class ZyxelFirewallDriver(ZyxelDriver):
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         self.base_prompt = lines[-1] if lines else self.base_prompt
 
+    def _upload_snapshot(self, remote_path: str, config_text: str) -> str:
+        """Upload the snapshot to /conf/, trying SFTP -> SCP -> FTP.
+
+        Real-device finding (USG FLEX H): opening SFTP alongside the active
+        shell channel can yield 'Garbage packet received'; some firmwares
+        don't support the SFTP subsystem at all. The dedicated-connection
+        attempts avoid the channel-multiplexing issue; FTP is the documented
+        uOS file-upload service (used for firmware uploads) as last resort.
+
+        Returns which transport succeeded ("sftp" / "scp" / "ftp").
+        """
+        errors: list[str] = []
+        for method in ("sftp", "scp"):
+            fn = sftp_upload_dedicated if method == "sftp" else scp_upload_dedicated
+            try:
+                fn(
+                    self.spec.host,
+                    self.spec.port,
+                    self.spec.username,
+                    self.spec.password,
+                    remote_path,
+                    config_text.encode("utf-8"),
+                )
+                return method
+            except DriverError as err:
+                errors.append(f"{method}: {err}")
+            except Exception as err:  # paramiko garbage packets etc.
+                errors.append(f"{method}: {err.__class__.__name__}: {err}")
+        # FTP fallback — same pattern as the AP/ZLD drivers
+        import ftplib
+        import io
+
+        try:
+            ftp = ftplib.FTP(timeout=30)
+            ftp.connect(self.spec.host, 21)
+            ftp.login(self.spec.username, self.spec.password)
+            ftp.set_pasv(True)
+            ftp.storbinary(f"STOR {remote_path}", io.BytesIO(config_text.encode("utf-8")))
+            ftp.quit()
+            return "ftp"
+        except (*ftplib.all_errors, OSError) as err:
+            errors.append(f"ftp: {err}")
+        raise OperationFailedError(
+            "Could not upload the config to the firewall — all transfer methods "
+            f"failed ({'; '.join(errors)}). If SFTP/SCP are not available on this "
+            "firmware, enable the FTP server on the device and retry: "
+            "'vrf main ftp-server enabled true' + 'commit' (disable again "
+            "afterwards if desired)."
+        )
+
     def apply_config(self, config_text: str) -> str:
-        """Restore a snapshot: SFTP upload + dry-run validation + config-apply.
+        """Restore a snapshot: upload + dry-run validation + config-apply.
 
         Applies immediately without a reboot; the post-revert confirmation
         pull in the backup service verifies the applied state.
@@ -366,12 +418,8 @@ class ZyxelFirewallDriver(ZyxelDriver):
         remote = f"/conf/{name}"
 
         self._ensure_running_config_mode()
-        try:
-            self.transport.sftp_put(remote, config_text.encode("utf-8"))
-        except DriverError as err:
-            raise OperationFailedError(
-                f"Could not upload config to the firewall (SFTP over SSH): {err}"
-            ) from err
+        method = self._upload_snapshot(remote, config_text)
+        log.info("firewall restore %s: uploaded via %s", self.spec.host, method)
 
         # Pre-flight: validate the file without applying it.
         dry = self.run(f"cmd config-apply option dry-run {name}", timeout=180)
