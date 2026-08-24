@@ -324,7 +324,7 @@ without checking the relevant guide.
 | Family | Platform (per README) | Verified models (guide) | Config pull | Pager handling | Revert |
 |---|---|---|---|---|---|
 | `switch` | all ZyNOS and FaOS based switches | XS1930-12HP (V4.80–4.90), CX4800-56F (V1.00–5.00) | `show running-config` | plain form is unpaged; the paged variant is `show running-config page` — not used | **Supported.** Zynk serves the snapshot over TFTP (UDP 69, blksize negotiation per RFC 2348), stages it with `copy tftp config 1 <ip> <file>`, then applies it with `reload config 1` (confirmed `y`) — a warm reboot. Zynk waits for the SSH port to answer again before the confirmation pull. |
-| `firewall` | all uOS based firewalls | USG FLEX 700H (V1.39) | `show config running \| no-pager` | pager additionally disabled session-wide via `cliconfig pager enabled false` | **Not in alpha.** Documented path: stage file on the device, then `cmd config-apply <file>` |
+| `firewall` | all uOS based firewalls | USG FLEX 700H (V1.39) | `show config running \| no-pager` | pager additionally disabled session-wide via `cliconfig pager enabled false` | **Supported.** SFTP-upload the snapshot to `/conf/` over the existing SSH connection (uOS SSH exposes SFTP — its own Device HA uses it), validate with `cmd config-apply option dry-run <file>` (checks the config WITHOUT applying), then `cmd config-apply <file>` — applies immediately **without a reboot**; success shows an `ok / message OK` response tree. A dry-run failure blocks the apply. A `copy-reboot` option exists (apply + reboot) but is not used. |
 | `zld_firewall` | all ZLD based firewalls (ATP & USG ZyWALL) — **End of Life** | ATP800 (V4.10–5.42; the ZLD guide covers USG ZyWALL as well) | `show running-config` (at privilege prompt; driver sends `enable` if needed) | none documented for ZLD | **Supported.** FTP upload to `/conf/`, then `apply /conf/<file> ignore-error rollback` + `write` (single-line command). Requires FTP enabled on the device. |
 | `ap` | ZyNOS based access points | WBE660S (V7.40) | `show running-config` (at enable prompt) | — | **Supported.** FTP upload to `/conf/`, then `apply running-config /conf/<file>` + `ignore error rollback` + `write`. Requires FTP enabled on the AP. |
 
@@ -473,6 +473,8 @@ valid.
 | `[timeout] Timed out waiting for prompt` | The device's prompt doesn't match the expected pattern. ANSI escape sequences (e.g. the `ESC 7` DECSC marker XS1930 switches emit after the prompt) and `\r` are stripped automatically; if it still fails, the system prompt probably contains unexpected characters — capture the CLI prompt and extend the driver's `prompt_re`. |
 | Pull says `Device returned an empty configuration` | Device answered but produced no config — often a pager or privilege issue. Verify manually with the same SSH user. |
 | Revert fails with `[failed] Could not upload config to AP (FTP must be enabled…)` | AP revert needs FTP (port 21) enabled on the access point; Zynk uploads via FTP after the SSH session is established. |
+| Firewall (uOS) revert fails with `Device does not provide SFTP over SSH` | The firewall's SSH service must expose the SFTP subsystem (it does by default — Device HA relies on it). If it was disabled, re-enable SSH/SFTP in the device's remote-management settings. |
+| Firewall (uOS) revert fails with `dry-run` in the message | The firewall itself rejected the config during validation (`cmd config-apply option dry-run`) — the device's response is included verbatim; fix the underlying config issue (the destructive apply was never sent). |
 | Switch revert fails with `cannot bind TFTP listener … 69/udp` | Zynk could not bind UDP 69. In Docker publish the port (`-p 69:69/udp`); on Linux as non-root use `setcap cap_net_bind_service` or a port above 1024 via `ZYNK_TFTP_PORT` (only works if the switch firmware supports non-standard TFTP ports — usually it does not). |
 | Switch revert fails with `TFTP transfer failed: no TFTP request arrived` | The switch never connected back to Zynk; the error message includes the switch's actual CLI output — read it first. The device pulls FROM Zynk: verify it can route to `ZYNK_TFTP_PUBLIC_ADDRESS` (or the auto-detected IP) on UDP 69 — in Docker bridge mode you must set `ZYNK_TFTP_PUBLIC_ADDRESS` to the host's LAN IP. Use the device **Test** button: for switches it additionally runs a TFTP path check (`copy running-config tftp …` — the switch pushes to a throwaway receiver; nothing is modified) which tells you immediately whether the UDP path works. |
 | Switch revert fails with `%Invalid command "copy"` / switch refused | **Switch series CLI restriction** — the model (parsed from the config header `; Product Name = …` at pull time) determines the explanation: **XS1930/XS1935/XMG1930** ship with a restricted basic CLI and need a CLI license from Zyxel (myzyxel.com) for configuration commands; **GS1900/GS1915/XMG1915/GS1920/XGS1930/XGS1935** have no full CLI and no license can unlock it. Config *pull* works in all cases; config *restore* needs the full CLI. Series with full CLI out of the box: GS1350, RGS200, GS2220, XGS2220, XMG2230, XGS3700, XS3800, XGS4600, CX3800, CX4800. Full matrix: `backend/app/devices/switch_cli_support.csv`. The error message includes the switch's `?` listing showing which commands it does have. |
@@ -486,11 +488,13 @@ valid.
 
 Known alpha limitations:
 
-- **uOS firewall revert not implemented** — staging the file on the device
-  (`cmd config-apply`) isn't built yet; the API returns a clear `[unsupported]`
-  error instead of guessing.
+- Firewall (uOS) revert is implemented against the documented commands
+  (SFTP upload + dry-run + `cmd config-apply`) but not yet verified on real
+  hardware end-to-end — treat the first run as an experiment and keep console
+  access available.
 - Switch revert is implemented against the documented XS1930/CX4800 commands
-  but not yet verified on real hardware end-to-end — treat the first run as an
+  but not yet verified on real hardware end-to-end (and requires a full-CLI
+  series — see the CLI restriction matrix) — treat the first run as an
   experiment and keep console access available.
 - Status is a TCP probe of the SSH port every 5 minutes (not a full SSH login);
   each device keeps its last known state until the next check, and there is no
@@ -499,7 +503,6 @@ Known alpha limitations:
 - No built-in TLS; assume reverse proxy for anything beyond localhost/LAN.
 - Prompt detection is regex-based and may need tuning for exotic system names.
 
-Roadmap candidates: uOS firewall revert via `cmd config-apply`, WebSocket
-status push, SNMP-free latency history graphs, notification hooks on
-config-change detection.
+Roadmap candidates: WebSocket status push, SNMP-free latency history graphs,
+notification hooks on config-change detection.
 

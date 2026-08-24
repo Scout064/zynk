@@ -22,8 +22,8 @@ SUPPORTED_FAMILIES = [
         "platform": "uOS",
         "verified_models": "USG FLEX 700H",
         "config_pull": "show config running | no-pager",
-        "revert_supported": False,
-        "revert_note": "not in alpha (needs file staged on device)",
+        "revert_supported": True,
+        "revert_note": "SFTP upload + dry-run check + cmd config-apply (no reboot)",
         "eol": False,
     },
     {

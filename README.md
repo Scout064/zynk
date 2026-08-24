@@ -25,7 +25,7 @@ SSH sessions; verify against your real hardware before relying on it.
 | Family | Models (verified against guide) | Config pull | Revert |
 |---|---|---|---|
 | Switch | All ZyNOS and FaOS based Switches | `show running-config` | yes — TFTP + `copy tftp config` + `reload config` (device reboots) |
-| Firewall (uOS) | All uOS based | `show config running \| no-pager` | not in alpha (needs file staged on device) |
+| Firewall (uOS) | All uOS based | `show config running \| no-pager` | yes — SFTP upload + `cmd config-apply` with a `dry-run` pre-flight check (no reboot) |
 | Firewall (ZLD) | All ZLD based (ATP & USG ZyWALL) | `show running-config` | yes — FTP upload + `apply /conf/<file> ignore-error rollback` + `write` |
 | Access Point | ZyNOS based | `show running-config` | yes — FTP upload + `apply running-config ... ignore error rollback` + `write` |
 

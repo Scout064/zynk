@@ -25,6 +25,7 @@ class FakeTransport(ShellTransport):
         self.banner = banner
         self.responses = responses or {}
         self.sent: list[str] = []
+        self.uploads: list[tuple[str, bytes]] = []
 
     def connect(self) -> None:
         self._client = object()
@@ -41,6 +42,9 @@ class FakeTransport(ShellTransport):
         body = self.responses.get(cmd, "")
         tail = self.banner.strip().splitlines()[-1] if self.banner.strip() else "#"
         return sanitize_terminal_output(f"{cmd}\r\n{body}{tail} ")
+
+    def sftp_put(self, remote_path: str, data: bytes) -> None:
+        self.uploads.append((remote_path, data))
 
     def close(self) -> None:
         self._client = None
@@ -503,6 +507,103 @@ class TestFirewallDriver:
         assert "vrf main" in cfg
         assert "no-pager" not in cfg
         d.close()
+
+
+class TestFirewallRestore:
+    """uOS firewall restore: SFTP upload + dry-run + cmd config-apply (no reboot)."""
+
+    APPLY_OK = "configuration-apply\r\n    ok\r\n        message OK\r\n        ..\r\n    ..\r\n"
+
+    class FirewallFake(FakeTransport):
+        def __init__(self):
+            super().__init__({}, "usgflex700h> ")
+            self.mode_prompts = {
+                "": "usgflex700h> ",
+                "edit running": "usgflex700h running config# ",
+            }
+
+        def read_until(self, pattern, timeout: float = 60.0):
+            cmd = self.sent[-1] if self.sent else ""
+            body = self.responses.get(cmd, "")
+            # prompt reflects the current mode
+            prompt = (
+                "usgflex700h running config# "
+                if any(s in ("edit running",) or s.startswith("cmd ") for s in self.sent)
+                else "usgflex700h> "
+            )
+            if cmd == "edit running":
+                return f"{cmd}\r\n{prompt}"
+            return sanitize_terminal_output(f"{cmd}\r\n{body}{prompt}")
+
+    def test_full_restore_flow(self, monkeypatch):
+        monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
+        d = make_fake_driver("firewall", {}, "usgflex700h> ")
+        fake = self.FirewallFake()
+        fake.responses = {
+            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-apply zynkabcdef.conf": self.APPLY_OK,
+        }
+        d._make_transport = lambda: fake
+        d.connect()
+
+        out = d.apply_config(FIREWALL_CONFIG)
+
+        assert "message OK" in out
+        # SFTP upload to /conf/ with a compliant filename
+        assert fake.uploads == [("/conf/zynkabcdef.conf", FIREWALL_CONFIG.encode())]
+        # command sequence: enter mode, dry-run first, then apply
+        assert "edit running" in fake.sent
+        dry_idx = fake.sent.index("cmd config-apply option dry-run zynkabcdef.conf")
+        apply_idx = fake.sent.index("cmd config-apply zynkabcdef.conf")
+        assert dry_idx < apply_idx
+        assert "reload" not in " ".join(fake.sent)  # no reboot involved
+        d.close()
+
+    def test_dry_run_failure_blocks_apply(self, monkeypatch):
+        monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
+        d = make_fake_driver("firewall", {}, "usgflex700h> ")
+        fake = self.FirewallFake()
+        fake.responses = {
+            "cmd config-apply option dry-run zynkabcdef.conf": (
+                "configuration-apply\r\n    error\r\n        message syntax error line 42\r\n"
+            ),
+        }
+        d._make_transport = lambda: fake
+        d.connect()
+
+        with pytest.raises(OperationFailedError, match="dry-run.*syntax error"):
+            d.apply_config(FIREWALL_CONFIG)
+        # the destructive apply must never have been sent
+        assert not any(s == "cmd config-apply zynkabcdef.conf" for s in fake.sent)
+
+    def test_apply_failure_surfaces(self, monkeypatch):
+        monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
+        d = make_fake_driver("firewall", {}, "usgflex700h> ")
+        fake = self.FirewallFake()
+        fake.responses = {
+            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-apply zynkabcdef.conf": (
+                "configuration-apply\r\n    error\r\n        message file not found\r\n"
+            ),
+        }
+        d._make_transport = lambda: fake
+        d.connect()
+
+        with pytest.raises(OperationFailedError, match="config-apply failed.*file not found"):
+            d.apply_config(FIREWALL_CONFIG)
+
+    def test_sftp_failure_surfaces(self):
+        d = make_fake_driver("firewall", {}, "usgflex700h> ")
+        fake = self.FirewallFake()
+
+        def boom(remote, data):
+            raise OperationFailedError("SFTP upload to /conf/x failed: no space")
+
+        fake.sftp_put = boom
+        d._make_transport = lambda: fake
+        d.connect()
+        with pytest.raises(OperationFailedError, match="SFTP"):
+            d.apply_config(FIREWALL_CONFIG)
 
 
 class TestZLDFirewallDriver:

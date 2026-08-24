@@ -307,10 +307,22 @@ class ZyxelFirewallDriver(ZyxelDriver):
 
     Full running config via `show config running | no-pager`; pager disabled
     session-wide with `cliconfig pager enabled false`.
+
+    Revert (per guide §2.6.5 + File Manager commands): SFTP-upload the
+    snapshot to /conf/ over the existing SSH connection, validate with
+    `cmd config-apply option dry-run <file>`, then `cmd config-apply <file>`
+    — applies immediately WITHOUT a reboot; success shows an `ok / message OK`
+    response tree. (A `copy-reboot` option exists for reboot-apply, not used.)
     """
 
     family = "firewall"
     prompt_re = FIREWALL_PROMPT_RE
+    # Error keywords across uOS responses (config-apply failures print
+    # error trees rather than single-line messages).
+    APPLY_ERROR_RE = re.compile(
+        r"error|fail|can\s*not|can'?t|denied|refused|not found|invalid|" r"timed?\s*out|unsupport",
+        re.IGNORECASE,
+    )
 
     def _disable_pager(self) -> None:
         self.run("cliconfig pager enabled false", timeout=15)
@@ -325,11 +337,52 @@ class ZyxelFirewallDriver(ZyxelDriver):
         out = self.run("show system-info", timeout=30)
         return bool(out.strip())
 
+    def _ensure_running_config_mode(self) -> None:
+        """Enter `edit running` mode (prompt `<host> running config#`)."""
+        if self.base_prompt.rstrip().endswith("#") and "running" in self.base_prompt:
+            return
+        out = self.run("edit running", timeout=30)
+        # The only response is the new prompt; confirm we are in the mode by
+        # looking at the echoed transcript's last prompt-ish line.
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        tail = lines[-1] if lines else ""
+        if "running" not in out and not tail:
+            # tolerate drivers/firmwares that echo nothing; verify via prompt
+            self.transport.sendline()
+            text = self.transport.read_until(self.prompt_re, timeout=15)
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        self.base_prompt = lines[-1] if lines else self.base_prompt
+
     def apply_config(self, config_text: str) -> str:
-        raise OperationFailedError(
-            "Firewall config revert requires staging the file on the device "
-            "(cmd config-apply) and is not enabled in this alpha"
-        )
+        """Restore a snapshot: SFTP upload + dry-run validation + config-apply.
+
+        Applies immediately without a reboot; the post-revert confirmation
+        pull in the backup service verifies the applied state.
+        """
+        import os
+
+        # /conf/ file name: <=76 chars, must end with .conf (guide constraints)
+        name = f"zynk{os.urandom(3).hex()}.conf"
+        remote = f"/conf/{name}"
+
+        self._ensure_running_config_mode()
+        try:
+            self.transport.sftp_put(remote, config_text.encode("utf-8"))
+        except DriverError as err:
+            raise OperationFailedError(
+                f"Could not upload config to the firewall (SFTP over SSH): {err}"
+            ) from err
+
+        # Pre-flight: validate the file without applying it.
+        dry = self.run(f"cmd config-apply option dry-run {name}", timeout=180)
+        if self.APPLY_ERROR_RE.search(dry) and "ok" not in dry.lower():
+            raise OperationFailedError(f"Firewall rejected the config (dry-run): {dry.strip()!r}")
+
+        out = self.run(f"cmd config-apply {name}", timeout=300)
+        lowered = out.lower()
+        if "ok" not in lowered or self.APPLY_ERROR_RE.search(out):
+            raise OperationFailedError(f"Firewall config-apply failed: {out.strip()!r}")
+        return out
 
 
 class ZyxelZLDFirewallDriver(ZyxelDriver):

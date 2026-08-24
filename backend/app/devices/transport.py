@@ -150,6 +150,26 @@ class ShellTransport:
         self._buffer = b""
         self._channel.sendall(text.encode("utf-8"))
 
+    def sftp_put(self, remote_path: str, data: bytes) -> None:
+        """Upload bytes to the device via SFTP over the existing SSH connection.
+
+        Only works if the device's SSH service exposes the SFTP subsystem
+        (uOS firewalls do — their own Device HA uses SFTP for file transfer).
+        """
+        import io
+
+        assert self._client is not None
+        try:
+            sftp = self._client.open_sftp()
+        except paramiko.SSHException as err:
+            raise UnsupportedCommandError(f"Device does not provide SFTP over SSH: {err}") from err
+        try:
+            sftp.putfo(io.BytesIO(data), remote_path)
+        except OSError as err:
+            raise OperationFailedError(f"SFTP upload to {remote_path} failed: {err}") from err
+        finally:
+            sftp.close()
+
     def sendline(self, line: str = "") -> None:
         self.send(line + "\n")
 
