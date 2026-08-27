@@ -175,7 +175,7 @@ class TestAbout:
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "Zynk"
-        assert data["version"] == "0.5.0"
+        assert data["version"] == "0.6.0"
         assert data["license"] == "MIT"
         assert data["repository"].startswith("https://github.com/")
         assert data["stats"]["devices"] == 1
@@ -195,7 +195,7 @@ class TestAbout:
     def test_health_includes_version(self, client: TestClient):
         resp = client.get("/api/health")
         assert resp.status_code == 200
-        assert resp.json()["version"] == "0.5.0"
+        assert resp.json()["version"] == "0.6.0"
 
 
 class TestStatusAndAudit:

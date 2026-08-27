@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "Zynk"
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 LICENSE = "MIT"
 REPOSITORY = "https://github.com/Scout064/zynk"
 
