@@ -51,7 +51,11 @@ Core capabilities:
 
 ### 2.1 Docker (recommended)
 
+From a checkout of this repository (the image is built from the repo — clone
+it first if you haven't):
+
 ```bash
+git clone https://github.com/Scout064/zynk.git && cd zynk
 cd docker
 docker compose up -d --build
 ```
@@ -324,7 +328,7 @@ without checking the relevant guide.
 | Family | Platform (per README) | Verified models (guide) | Config pull | Pager handling | Revert |
 |---|---|---|---|---|---|
 | `switch` | all ZyNOS and FaOS based switches | XS1930-12HP (V4.80–4.90), CX4800-56F (V1.00–5.00) | `show running-config` | plain form is unpaged; the paged variant is `show running-config page` — not used | **Supported.** Zynk serves the snapshot over TFTP (UDP 69, blksize negotiation per RFC 2348), stages it with `copy tftp config 1 <ip> <file>`, then applies it with `reload config 1` (confirmed `y`) — a warm reboot. Zynk waits for the SSH port to answer again before the confirmation pull. |
-| `firewall` | all uOS based firewalls | USG FLEX 700H (V1.39) | `show config running \| no-pager` | pager additionally disabled session-wide via `cliconfig pager enabled false` | **Supported (upload path + config conversion hardware-verified).** The stored tree-format snapshot is converted to flat CLI script syntax (`/ vrf main …` lines — the device's own apply-config-error.log shows the tree format is fully ignored) and uploaded via FTP to `/tmp` (passive mode; direct `/conf` STOR is firmware-blocked with 550) then FTP-renamed into `/conf`; validated with `cmd config-apply <file> option dry-run` (file name BEFORE `option`; applies NOTHING — verified `ok / message OK` on a full 6500-line config); then `cmd config-apply <file>` — applies immediately **without a reboot**; the uploaded file is removed afterwards (`cmd config-delete`). SFTP/SCP on this firmware are unusable (garbage packets / nc-cli intercepts exec) and only serve as fallbacks — the device FTP server must be enabled (`vrf main ftp-server enabled true` + `commit`). |
+| `firewall` | all uOS based firewalls | USG FLEX 700H (V1.39) | **FTP download of `/conf/startup-config.conf`** (preferred — includes real secrets and is directly apply-able; requires the device FTP server: `vrf main ftp-server enabled true` + `commit`). CLI fallback: `show config running \| no-pager` (secrets are masked/hashed, tree format). | pager additionally disabled session-wide via `cliconfig pager enabled false` (CLI path) | **Supported (upload path + native format dry-run hardware-verified).** Native-format snapshots (FTP pulls) are uploaded as-is; tree-format (CLI-pulled) snapshots are converted to flat CLI script syntax first — the device's own apply-config-error.log shows the tree format is fully ignored — and carry masked secrets, so prefer FTP pulls before restoring. Upload goes to `/tmp` (passive mode; direct `/conf` STOR is firmware-blocked with 550) then FTP-renamed into `/conf`; validated with `cmd config-apply <file> option dry-run` (file name BEFORE `option`; applies NOTHING — verified `ok / message OK`); then `cmd config-apply <file>` — applies immediately **without a reboot**; the uploaded file is removed afterwards (`cmd config-delete`). SFTP/SCP on this firmware are unusable (garbage packets / nc-cli intercepts exec) and only serve as upload fallbacks. |
 | `zld_firewall` | all ZLD based firewalls (ATP & USG ZyWALL) — **End of Life** | ATP800 (V4.10–5.42; the ZLD guide covers USG ZyWALL as well) | `show running-config` (at privilege prompt; driver sends `enable` if needed) | none documented for ZLD | **Supported.** FTP upload to `/conf/`, then `apply /conf/<file> ignore-error rollback` + `write` (single-line command). Requires FTP enabled on the device. |
 | `ap` | ZyNOS based access points | WBE660S (V7.40) | `show running-config` (at enable prompt) | — | **Supported.** FTP upload to `/conf/`, then `apply running-config /conf/<file>` + `ignore error rollback` + `write`. Requires FTP enabled on the AP. |
 

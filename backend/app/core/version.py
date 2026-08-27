@@ -21,9 +21,9 @@ SUPPORTED_FAMILIES = [
         "label": "Firewalls",
         "platform": "uOS",
         "verified_models": "USG FLEX 700H",
-        "config_pull": "show config running | no-pager",
+        "config_pull": "FTP: startup-config.conf (CLI fallback)",
         "revert_supported": True,
-        "revert_note": "SFTP upload + dry-run check + cmd config-apply (no reboot)",
+        "revert_note": "FTP upload + dry-run check + cmd config-apply (no reboot)",
         "eol": False,
     },
     {

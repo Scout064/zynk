@@ -42,6 +42,7 @@ class ZyxelDriver:
         self.transport: ShellTransport | None = None
         self.base_prompt: str = ""
         self.detected_model: str | None = None  # from config header, if parsed
+        self.pull_source: str = ""  # how the last get_config ran (e.g. ftp/cli)
 
     # -- helpers for tests ---------------------------------------------------
     def _make_transport(self) -> ShellTransport:

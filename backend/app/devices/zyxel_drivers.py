@@ -333,6 +333,23 @@ def tree_config_to_cli_script(text: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def looks_like_cli_script(text: str) -> bool:
+    """True if the config is already in flat CLI script syntax.
+
+    Native config files downloaded from the device (e.g. /conf/
+    startup-config.conf) start with '# ' header comments followed by
+    '/ vrf "main" ...' statement lines — directly apply-able (dry-run
+    verified). Tree-format CLI output starts with unindented section
+    names instead.
+    """
+    for ln in text.splitlines()[:20]:
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        return s.startswith("/ ")
+    return False
+
+
 class ZyxelFirewallDriver(ZyxelDriver):
     """USG FLEX 700H (uOS CLI).
 
@@ -358,10 +375,63 @@ class ZyxelFirewallDriver(ZyxelDriver):
     def _disable_pager(self) -> None:
         self.run("cliconfig pager enabled false", timeout=15)
 
+    def _ftp_download_startup_config(self) -> str:
+        """Download /conf/startup-config.conf via FTP (passive mode).
+
+        This is the authoritative config file: flat CLI script syntax
+        (directly apply-able — dry-run verified) INCLUDING real secrets.
+        The CLI `show config running` output masks secrets irreversibly
+        (e.g. DDNS api-tokens appear as $7$...$ hashes).
+        """
+        import ftplib
+        import io
+
+        ftp = ftplib.FTP(timeout=60)
+        try:
+            ftp.connect(self.spec.host, 21)
+            ftp.login(self.spec.username, self.spec.password)
+            ftp.set_pasv(True)
+            ftp.cwd("conf")
+            buf = io.BytesIO()
+            ftp.retrbinary("RETR startup-config.conf", buf.write)
+        finally:
+            try:
+                ftp.quit()
+            except Exception:  # noqa: BLE001 - best-effort close
+                try:
+                    ftp.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        data = buf.getvalue().decode("utf-8", errors="replace")
+        if not data.strip():
+            raise DriverError("startup-config.conf downloaded empty")
+        return data
+
     def get_config(self) -> str:
+        """Pull the config: FTP startup-config.conf preferred, CLI fallback.
+
+        FTP gives the authoritative file (script syntax + real secrets);
+        it needs the device's FTP server ('vrf main ftp-server enabled
+        true' + 'commit'). If FTP is unavailable, fall back to
+        'show config running | no-pager' — a valid but SECOND-CLASS
+        snapshot: secrets are masked/hashed, and the tree format must be
+        converted on restore (and restored secrets may not match).
+        """
+        try:
+            cfg = self._ftp_download_startup_config()
+            self.pull_source = "ftp"
+            return cfg
+        except Exception as err:
+            log.warning(
+                "firewall %s: FTP config download failed (%s); falling back "
+                "to CLI pull — note that CLI output masks secrets",
+                self.spec.host,
+                err,
+            )
         out = self.run("show config running | no-pager")
         if not out.strip():
             raise DriverError("Device returned an empty configuration")
+        self.pull_source = "cli"
         return out
 
     def check_alive(self) -> bool:
@@ -447,11 +517,13 @@ class ZyxelFirewallDriver(ZyxelDriver):
         )
 
     def apply_config(self, config_text: str) -> str:
-        """Restore a snapshot: convert to CLI script, upload, dry-run, apply.
+        """Restore a snapshot: upload + dry-run validation + config-apply.
 
-        The stored snapshot is the tree format of `show config running`;
-        `cmd config-apply` requires flat CLI script syntax, so it is
-        converted first (tree_config_to_cli_script, hardware-verified).
+        Snapshots pulled via FTP (native script format) are uploaded as-is
+        — the device accepts them directly including the '# ' header
+        comments (dry-run verified). Older/CLI-pulled snapshots are in
+        tree format and are converted to script syntax first; note their
+        secrets are masked, so a restore may not reproduce secret values.
         Applies immediately without a reboot; the post-revert confirmation
         pull in the backup service verifies the applied state.
         """
@@ -459,7 +531,16 @@ class ZyxelFirewallDriver(ZyxelDriver):
 
         # /conf/ file name: <=76 chars, must end with .conf (guide constraints)
         name = f"zynk{os.urandom(3).hex()}.conf"
-        script = tree_config_to_cli_script(config_text)
+        if looks_like_cli_script(config_text):
+            script = config_text
+        else:
+            script = tree_config_to_cli_script(config_text)
+            log.warning(
+                "firewall %s: tree-format snapshot converted to script syntax "
+                "(CLI-pulled snapshot — secrets in it are masked and may not "
+                "restore correctly)",
+                self.spec.host,
+            )
 
         self._ensure_running_config_mode()
         method = self._upload_snapshot(name, script)

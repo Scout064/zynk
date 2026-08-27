@@ -88,10 +88,28 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok", "version": __version__}
 
-    dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-    if dist.exists():
+    dist = _find_frontend_dist()
+    if dist is not None:
         app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
     return app
+
+
+def _find_frontend_dist() -> Path | None:
+    """Locate the built frontend in both the dev and Docker layouts.
+
+    Local dev:  repo/backend/app/main.py  -> repo/frontend/dist (parents[2])
+    Docker:     /app/app/main.py          -> /app/frontend/dist (parents[1])
+    A fixed parents[N] works in only one of the two layouts and silently
+    skips the static mount in the other (SPA 404s while /api works).
+    """
+    here = Path(__file__).resolve()
+    for candidate in (
+        here.parents[1] / "frontend" / "dist",  # docker
+        here.parents[2] / "frontend" / "dist",  # local dev
+    ):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 app = create_app()

@@ -506,6 +506,68 @@ class TestFirewallDriver:
         d.close()
 
 
+class TestFirewallPull:
+    """uOS config pull: FTP startup-config.conf preferred, CLI fallback."""
+
+    NATIVE_CONF = (
+        "# config file type: startup\n"
+        "# model: USG FLEX 700H\n"
+        '/ vrf "main" system default-interface-group "algorithm" "wrr"\n'
+        '/ vrf "main" ddns rule "gw02" account "api-token" "SECRET"\n'
+    )
+
+    def _ftp_native(self, monkeypatch):
+        native = self.NATIVE_CONF
+
+        class FakeFTP:
+            def __init__(self, timeout=None): ...
+            def connect(self, host, port): ...
+            def login(self, u, p): ...
+            def set_pasv(self, v):
+                assert v is True
+
+            def cwd(self, d):
+                assert d == "conf"
+
+            def retrbinary(self, cmd, write):
+                assert cmd == "RETR startup-config.conf"
+                write(native.encode())
+
+            def quit(self): ...
+
+        import ftplib
+
+        monkeypatch.setattr(ftplib, "FTP", FakeFTP)
+
+    def test_pull_prefers_ftp_startup_config(self, monkeypatch):
+        self._ftp_native(monkeypatch)
+        d = make_fake_driver(
+            "firewall", {"show config running | no-pager": "should not be used"}, "usg700h> "
+        )
+        d.connect()
+        cfg = d.get_config()
+        assert cfg == self.NATIVE_CONF  # native file, secrets included
+        assert d.pull_source == "ftp"
+        assert "api-token" in cfg
+        d.close()
+
+    def test_pull_falls_back_to_cli_when_ftp_down(self):
+        # no ftplib mock -> FTP connect to 'fake' host fails -> CLI fallback
+        d = make_fake_driver(
+            "firewall",
+            {
+                "cliconfig pager enabled false": "",
+                "show config running | no-pager": FIREWALL_CONFIG,
+            },
+            "usg700h> ",
+        )
+        d.connect()
+        cfg = d.get_config()
+        assert "vrf main" in cfg
+        assert d.pull_source == "cli"
+        d.close()
+
+
 class TestTreeToCliScript:
     """tree_config_to_cli_script: uOS tree config -> flat CLI script syntax.
 
@@ -748,6 +810,45 @@ class TestFirewallRestore:
         assert "commit" in msg
         # the destructive apply must never have been sent
         assert not any(s.startswith("cmd config-apply") for s in fake.sent)
+
+    def test_native_script_snapshot_uploaded_as_is(self, monkeypatch):
+        """Script-format (FTP-pulled) snapshots need NO conversion."""
+        monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
+
+        captured: dict[str, bytes] = {}
+
+        class FakeFTP:
+            def __init__(self, timeout=None): ...
+            def connect(self, host, port): ...
+            def login(self, u, p): ...
+            def set_pasv(self, v): ...
+            def cwd(self, d): ...
+            def storbinary(self, cmd, data):
+                captured[cmd] = data.read()
+
+            def rename(self, src, dst): ...
+            def quit(self): ...
+
+        import ftplib
+
+        monkeypatch.setattr(ftplib, "FTP", FakeFTP)
+
+        native = TestFirewallPull.NATIVE_CONF
+        d = make_fake_driver("firewall", {}, "usgflex700h> ")
+        fake = self.FirewallFake()
+        fake.responses = {
+            "cmd config-apply zynkabcdef.conf option dry-run": self.APPLY_OK,
+            "cmd config-apply zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-delete zynkabcdef.conf": self.APPLY_OK,
+        }
+        d._make_transport = lambda: fake
+        d.connect()
+
+        out = d.apply_config(native)
+        assert "message OK" in out
+        # uploaded byte-for-byte, header comments included
+        assert captured["STOR up_zynkabcdef.conf"] == native.encode()
+        d.close()
 
     def test_dry_run_failure_blocks_apply_and_cleans_up(self, monkeypatch):
         monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")

@@ -25,7 +25,7 @@ SSH sessions; verify against your real hardware before relying on it.
 | Family | Models (verified against guide) | Config pull | Revert |
 |---|---|---|---|
 | Switch | All ZyNOS and FaOS based Switches | `show running-config` | yes — TFTP + `copy tftp config` + `reload config` (device reboots); not yet verified on full-CLI hardware |
-| Firewall (uOS) | All uOS based | `show config running \| no-pager` | yes — snapshot is converted to CLI script syntax, uploaded via FTP (`/tmp` → rename to `conf/`), validated with `dry-run`, then `cmd config-apply` (no reboot); conversion + upload + dry-run verified on hardware, final apply pending |
+| Firewall (uOS) | All uOS based | FTP download of `startup-config.conf` (CLI fallback) | yes — snapshot uploaded via FTP (`/tmp` → rename to `conf/`), validated with `dry-run`, then `cmd config-apply` (no reboot); native-format snapshots restore as-is — upload + dry-run verified on hardware |
 | Firewall (ZLD) | All ZLD based (ATP & USG ZyWALL) | `show running-config` | yes — FTP upload + `apply /conf/<file> ignore-error rollback` + `write` |
 | Access Point | ZyNOS based | `show running-config` | yes — FTP upload + `apply running-config ... ignore error rollback` + `write` |
 
@@ -53,7 +53,11 @@ SSH sessions; verify against your real hardware before relying on it.
 
 ## Quick start (Docker)
 
+From a checkout of this repository (the image is built from the repo, so
+clone it first):
+
 ```bash
+git clone https://github.com/Scout064/zynk.git && cd zynk
 cd docker
 docker compose up -d --build
 ```

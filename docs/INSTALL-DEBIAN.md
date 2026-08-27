@@ -198,17 +198,19 @@ sudo docker run --rm hello-world   # sanity check
 
 (On Ubuntu use the same commands with `linux/ubuntu` in the repository URL.)
 
-### 2.2 Get the compose file
+### 2.2 Get the code
+
+The container is **built from the repository** (the compose file builds with
+the repo root as its context), so clone it:
 
 ```bash
-sudo mkdir -p /opt/zynk
+sudo git clone https://github.com/Scout064/zynk.git /opt/zynk
 cd /opt/zynk
-sudo curl -LO https://raw.githubusercontent.com/Scout064/zynk/main/docker/docker-compose.yml
 ```
 
 ### 2.3 Configure
 
-Edit `docker-compose.yml`:
+Edit `docker/docker-compose.yml`:
 
 1. **`ZYNK_INITIAL_ADMIN_PASSWORD`** — set your own (created on first start
    only; if left at `change-me-now` a random password is generated and
@@ -216,22 +218,31 @@ Edit `docker-compose.yml`:
 2. **`ZYNK_TFTP_PUBLIC_ADDRESS`** — uncomment and set to the **host's LAN
    IP** (e.g. `192.168.1.10`). Required for switch restores: the switch must
    reach the container's mapped UDP 69 via the host IP.
-3. Data lives in `../data` relative to the compose file — i.e. `/opt/data`.
-   Adjust the volume path to your liking (e.g. `/var/lib/zynk:/data`).
+3. Data lives in `data/` inside the checkout (the compose volume `../data`
+   resolves relative to the compose file at `docker/`, i.e. `/opt/zynk/data`
+   — the directory is gitignored). Adjust to your liking (e.g.
+   `/var/lib/zynk:/data`).
 
 ### 2.4 Build and start
 
 ```bash
 cd /opt/zynk
-sudo docker compose up -d --build
+sudo docker compose -f docker/docker-compose.yml up -d --build
 ```
 
 ### 2.5 Verify
 
 ```bash
-sudo docker compose ps
+sudo docker compose -f docker/docker-compose.yml ps
 curl http://127.0.0.1:8000/api/health
-sudo docker compose logs zynk | grep -A2 "admin"   # first-run password if generated
+sudo docker compose -f docker/docker-compose.yml logs zynk | grep -A2 "admin"   # first-run password if generated
+```
+
+Also verify the web UI itself (not just the API — the SPA is served by the
+same container):
+
+```bash
+curl -sI http://127.0.0.1:8000/ | head -1   # must be 200, not 404
 ```
 
 Web UI: `http://<host-ip>:8000`.
@@ -309,8 +320,8 @@ Docker:
 
 ```bash
 cd /opt/zynk
-sudo git pull           # or download the new compose file / tarball
-sudo docker compose up -d --build
+sudo git pull
+sudo docker compose -f docker/docker-compose.yml up -d --build
 ```
 
 ---
@@ -322,6 +333,7 @@ sudo docker compose up -d --build
 | `unit/zynk.service: Failed` — venv not found | Check `ExecStart` path matches `/opt/zynk/.venv/bin/uvicorn` and `WorkingDirectory=/opt/zynk/backend`. |
 | Python 3.12 not available (Debian 12) | Use the Docker install, or build Python 3.12 from source. |
 | Web UI unreachable from LAN | Manual install binds `127.0.0.1` — change `ZYNK_HOST=0.0.0.0` (and protect it with a firewall/proxy). |
+| Docker: `GET /` returns 404 while `/api/health` works | The static-frontend mount was skipped — the app couldn't find `frontend/dist` (path layout differs between dev and image). Fixed since v0.5.0 with a layout-aware lookup; verify with `curl -sI http://localhost:8000/` expecting 200 after `docker compose up -d --build`. |
 | Switch restore: `cannot bind TFTP listener … 69/udp` | Manual: add the `AmbientCapabilities=CAP_NET_BIND_SERVICE` lines (§1.7). Docker: keep the `69:69/udp` port mapping. |
 | Switch restore: `no TFTP request arrived` | Set `ZYNK_TFTP_PUBLIC_ADDRESS` to the host LAN IP (Docker bridge networking hides the host). See DOCUMENTATION.md §11. |
 | Forgot the admin password | Restart once with `ZYNK_FORCE_ADMIN_RESET=true` + `ZYNK_INITIAL_ADMIN_PASSWORD=<new>` (dev escape hatch; disable afterwards). |
