@@ -31,6 +31,76 @@ and `/var/lib/zynk` for data. Both paths belong to the `zynk` service user.
 
 ---
 
+## Step 0 — Prepare an admin user with sudo
+
+All commands in this guide assume you are logged in as a regular user with
+`sudo` rights — never as root directly. If you just installed the OS and are
+sitting at a root shell, do this first.
+
+### 0.1 Create the user
+
+Replace `admin` with your preferred username:
+
+```bash
+adduser admin
+# follow the prompts: set a strong password; Full name/room/phone can be left empty
+```
+
+### 0.2 Install sudo (if missing)
+
+Debian minimal/net-install images often ship **without** sudo. Check:
+
+```bash
+sudo --version   # from the NEW user's shell
+```
+
+If the command is not found, install it from the root shell:
+
+```bash
+apt update
+apt install -y sudo
+```
+
+### 0.3 Grant the user sudo
+
+**Debian** — add the user to the `sudo` group:
+
+```bash
+usermod -aG sudo admin
+```
+
+**Ubuntu** — the first user created during installation usually has sudo
+already; if not (or for additional users), use the `sudo` group the same way:
+
+```bash
+usermod -aG sudo admin
+```
+
+Some Ubuntu setups instead use the `admin`/`wheel` convention; if
+`id admin` shows no sudo group membership after this, alternatively create
+a drop-in file:
+
+```bash
+echo "admin ALL=(ALL:ALL) ALL" > /etc/sudoers.d/admin
+chmod 440 /etc/sudoers.d/admin
+```
+
+> Never edit `/etc/sudoers` by hand — use `visudo` if you must change it.
+> The drop-in file above is the safe method.
+
+### 0.4 Verify
+
+Log out and back in as the new user (group membership only applies to new
+login sessions), then:
+
+```bash
+sudo whoami    # must print: root
+```
+
+From here on, run the rest of this guide as this user.
+
+---
+
 ## Option 1 — Manual Install
 
 ### 1.1 Install system packages
