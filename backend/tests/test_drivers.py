@@ -506,6 +506,70 @@ class TestFirewallDriver:
         d.close()
 
 
+class TestTreeToCliScript:
+    """tree_config_to_cli_script: uOS tree config -> flat CLI script syntax.
+
+    Hardware-verified on a USG FLEX 700H: the converted output of a full
+    6500-line config passes `cmd config-apply <file> option dry-run`.
+    """
+
+    def test_conversion(self):
+        from app.devices.zyxel_drivers import tree_config_to_cli_script
+
+        tree = (
+            "vrf main\n"
+            "    system\n"
+            '        hostname "my device"\n'
+            "        ..\n"
+            "    dos-prevention\n"
+            "        enabled true\n"
+            "        ..\n"
+            "    ..\n"
+        )
+        flat = tree_config_to_cli_script(tree)
+        assert flat == (
+            "/ vrf main\n"
+            "/ vrf main system\n"
+            '/ vrf main system hostname "my device"\n'
+            "/ vrf main dos-prevention\n"
+            "/ vrf main dos-prevention enabled true\n"
+        )
+
+    def test_deeper_nesting_and_sibling_sections(self):
+        from app.devices.zyxel_drivers import tree_config_to_cli_script
+
+        tree = (
+            "vrf main\n"
+            "    a\n"
+            "        b\n"
+            "            c 1\n"
+            "            ..\n"
+            "        ..\n"
+            "    d\n"
+            "        e true\n"
+            "        ..\n"
+            "    ..\n"
+            "gui\n"
+            "    f false\n"
+            "    ..\n"
+        )
+        flat = tree_config_to_cli_script(tree)
+        lines = flat.splitlines()
+        assert "/ vrf main a b c 1" in lines
+        assert "/ vrf main d e true" in lines
+        assert "/ gui f false" in lines
+        # sibling 'd' must not be nested under a/b
+        assert "/ vrf main a d" not in lines
+
+    def test_idempotent_top_level(self):
+        from app.devices.zyxel_drivers import tree_config_to_cli_script
+
+        flat = tree_config_to_cli_script("vrf main\n    x 1\n    ..\n")
+        # converting already-flat script text is NOT the goal, but the
+        # function must not crash on odd input
+        assert "/ vrf main" in flat
+
+
 class TestFirewallRestore:
     """uOS firewall restore: SFTP upload + dry-run + cmd config-apply (no reboot)."""
 
@@ -532,19 +596,71 @@ class TestFirewallRestore:
                 return f"{cmd}\r\n{prompt}"
             return sanitize_terminal_output(f"{cmd}\r\n{body}{prompt}")
 
+    def _ftp_ok(self, monkeypatch):
+        """Fake ftplib.FTP implementing the verified tmp-upload + rename flow."""
+
+        class FakeFTP:
+            operations: list[str] = []
+
+            def __init__(self, timeout=None): ...
+            def connect(self, host, port): ...
+            def login(self, u, p): ...
+            def set_pasv(self, v):
+                assert v is True  # verified: passive mode
+
+            def cwd(self, d):
+                FakeFTP.operations.append(f"cwd {d}")
+
+            def storbinary(self, cmd, data):
+                FakeFTP.operations.append(cmd)
+
+            def rename(self, src, dst):
+                FakeFTP.operations.append(f"rename {src} -> {dst}")
+
+            def quit(self): ...
+
+        import ftplib
+
+        monkeypatch.setattr(ftplib, "FTP", FakeFTP)
+        return FakeFTP
+
     def test_full_restore_flow(self, monkeypatch):
+        """Verified real-device flow: convert to script + FTP + dry-run + apply."""
         monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
-        uploaded: list[tuple[str, str, bytes]] = []
 
-        def fake_sftp(host, port, user, pw, remote, data, **kw):
-            uploaded.append(("sftp", remote, data))
+        captured: dict[str, bytes] = {}
 
-        monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", fake_sftp)
+        class FakeFTP:
+            operations: list[str] = []
+
+            def __init__(self, timeout=None): ...
+            def connect(self, host, port): ...
+            def login(self, u, p): ...
+            def set_pasv(self, v):
+                assert v is True  # verified: passive mode
+
+            def cwd(self, d):
+                FakeFTP.operations.append(f"cwd {d}")
+
+            def storbinary(self, cmd, data):
+                FakeFTP.operations.append(cmd)
+                captured[cmd] = data.read()
+
+            def rename(self, src, dst):
+                FakeFTP.operations.append(f"rename {src} -> {dst}")
+
+            def quit(self): ...
+
+        import ftplib
+
+        monkeypatch.setattr(ftplib, "FTP", FakeFTP)
+
         d = make_fake_driver("firewall", {}, "usgflex700h> ")
         fake = self.FirewallFake()
         fake.responses = {
-            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-apply zynkabcdef.conf option dry-run": self.APPLY_OK,
             "cmd config-apply zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-delete zynkabcdef.conf": self.APPLY_OK,
         }
         d._make_transport = lambda: fake
         d.connect()
@@ -552,121 +668,73 @@ class TestFirewallRestore:
         out = d.apply_config(FIREWALL_CONFIG)
 
         assert "message OK" in out
-        # upload went to /conf/ with a compliant filename via SFTP
-        assert uploaded == [("sftp", "/conf/zynkabcdef.conf", FIREWALL_CONFIG.encode())]
-        # command sequence: enter mode, dry-run first, then apply
+        # the UPLOADED payload is the converted CLI script, not the tree
+        from app.devices.zyxel_drivers import tree_config_to_cli_script
+
+        expected = tree_config_to_cli_script(FIREWALL_CONFIG).encode()
+        assert captured["STOR up_zynkabcdef.conf"] == expected
+        # FTP: cwd tmp + bare STOR, then rename tmp -> conf (real-device path)
+        assert "cwd tmp" in FakeFTP.operations
+        assert "rename up_zynkabcdef.conf -> /conf/zynkabcdef.conf" in FakeFTP.operations
+        # CLI sequence: enter mode, dry-run first, then apply, then cleanup
         assert "edit running" in fake.sent
-        dry_idx = fake.sent.index("cmd config-apply option dry-run zynkabcdef.conf")
+        dry_idx = fake.sent.index("cmd config-apply zynkabcdef.conf option dry-run")
         apply_idx = fake.sent.index("cmd config-apply zynkabcdef.conf")
-        assert dry_idx < apply_idx
+        del_idx = fake.sent.index("cmd config-delete zynkabcdef.conf")
+        assert dry_idx < apply_idx < del_idx
         assert "reload" not in " ".join(fake.sent)  # no reboot involved
         d.close()
 
-    def test_sftp_garbage_falls_back_to_scp(self, monkeypatch):
-        """Real-device regression: 'Garbage packet received' on SFTP -> SCP."""
+    def test_ftp_blocked_falls_back_to_scp(self, monkeypatch):
+        """FTP unavailable -> dedicated-connection SCP fallback."""
         monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
-        from paramiko.ssh_exception import SSHException
 
-        def garbage(*a, **kw):
-            raise SSHException("Garbage packet received")
+        class RefusedFTP:
+            def __init__(self, timeout=None): ...
+            def connect(self, host, port):
+                raise ConnectionRefusedError("ftp down")
+
+        import ftplib
+
+        monkeypatch.setattr(ftplib, "FTP", RefusedFTP)
+
+        uploads: list[str] = []
 
         def fake_scp(host, port, user, pw, remote, data, **kw):
-            return ("scp", remote, data)
+            uploads.append(remote)
 
-        monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", garbage)
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.scp_upload_dedicated", fake_scp
-        )
+        monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", fake_scp)
         d = make_fake_driver("firewall", {}, "usgflex700h> ")
         fake = self.FirewallFake()
         fake.responses = {
-            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-apply zynkabcdef.conf option dry-run": self.APPLY_OK,
             "cmd config-apply zynkabcdef.conf": self.APPLY_OK,
-        }
-        d._make_transport = lambda: fake
-        d.connect()
-        out = d.apply_config(FIREWALL_CONFIG)
-        assert "message OK" in out  # restore completed via SCP
-        d.close()
-
-    def test_sftp_and_scp_fail_fall_back_to_ftp(self, monkeypatch):
-        monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
-
-        def fail(*a, **kw):
-            raise DriverError("nope")
-
-        monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", fail)
-        monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", fail)
-
-        calls: list[tuple[str, bool]] = []
-
-        def fake_ftp_upload(*, host, user, password, remote_path, data, passive, **kw):
-            calls.append((remote_path, passive))
-            if passive:
-                raise ConnectionRefusedError("passive blocked")  # active works first
-
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.ftp_upload", fake_ftp_upload
-        )
-        d = make_fake_driver("firewall", {}, "usgflex700h> ")
-        fake = self.FirewallFake()
-        fake.responses = {
-            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
-            "cmd config-apply zynkabcdef.conf": self.APPLY_OK,
-        }
-        d._make_transport = lambda: fake
-        d.connect()
-        out = d.apply_config(FIREWALL_CONFIG)
-        assert "message OK" in out  # restore completed via FTP
-        # active mode tried first (matches the CLI guide examples)
-        assert calls == [("/conf/zynkabcdef.conf", False)]
-        d.close()
-
-    def test_ftp_active_fails_passive_tried(self, monkeypatch):
-        monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
-
-        def fail(*a, **kw):
-            raise DriverError("nope")
-
-        monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", fail)
-        monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", fail)
-
-        calls: list[bool] = []
-
-        def fake_ftp_upload(*, passive, **kw):
-            calls.append(passive)
-            if not passive:
-                raise ConnectionRefusedError("active blocked")
-
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.ftp_upload", fake_ftp_upload
-        )
-        d = make_fake_driver("firewall", {}, "usgflex700h> ")
-        fake = self.FirewallFake()
-        fake.responses = {
-            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
-            "cmd config-apply zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-delete zynkabcdef.conf": self.APPLY_OK,
         }
         d._make_transport = lambda: fake
         d.connect()
         out = d.apply_config(FIREWALL_CONFIG)
         assert "message OK" in out
-        assert calls == [False, True]  # active failed, passive succeeded
+        assert uploads == ["/conf/zynkabcdef.conf"]
         d.close()
 
     def test_all_transfers_fail_gives_guidance(self, monkeypatch):
         monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
 
-        def fail(*a, **kw):
+        class RefusedFTP:
+            def __init__(self, timeout=None): ...
+            def connect(self, host, port):
+                raise ConnectionRefusedError("refused")
+
+        import ftplib
+
+        monkeypatch.setattr(ftplib, "FTP", RefusedFTP)
+
+        def garbage(*a, **kw):
             raise DriverError("Garbage packet received")
 
-        monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", fail)
-        monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", fail)
-
-        def refused(**kw):
-            raise ConnectionRefusedError("timed out")
-
-        monkeypatch.setattr("app.devices.zyxel_drivers.ftp_upload", refused)
+        monkeypatch.setattr("app.devices.zyxel_drivers.sftp_upload_dedicated", garbage)
+        monkeypatch.setattr("app.devices.zyxel_drivers.scp_upload_dedicated", garbage)
         d = make_fake_driver("firewall", {}, "usgflex700h> ")
         fake = self.FirewallFake()
         d._make_transport = lambda: fake
@@ -675,28 +743,22 @@ class TestFirewallRestore:
             d.apply_config(FIREWALL_CONFIG)
         msg = str(exc.value)
         assert "all transfer methods failed" in msg
-        assert "Garbage packet received" in msg  # original error included
-        # both FTP modes attempted and reported
-        assert "ftp active: timed out" in msg
-        assert "ftp passive: timed out" in msg
-        # actionable guidance with the exact device commands
+        assert "Garbage packet received" in msg
         assert "vrf main ftp-server enabled true" in msg
         assert "commit" in msg
         # the destructive apply must never have been sent
         assert not any(s.startswith("cmd config-apply") for s in fake.sent)
 
-    def test_dry_run_failure_blocks_apply(self, monkeypatch):
+    def test_dry_run_failure_blocks_apply_and_cleans_up(self, monkeypatch):
         monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.sftp_upload_dedicated",
-            lambda *a, **kw: None,
-        )
+        self._ftp_ok(monkeypatch)
         d = make_fake_driver("firewall", {}, "usgflex700h> ")
         fake = self.FirewallFake()
         fake.responses = {
-            "cmd config-apply option dry-run zynkabcdef.conf": (
+            "cmd config-apply zynkabcdef.conf option dry-run": (
                 "configuration-apply\r\n    error\r\n        message syntax error line 42\r\n"
             ),
+            "cmd config-delete zynkabcdef.conf": self.APPLY_OK,
         }
         d._make_transport = lambda: fake
         d.connect()
@@ -705,20 +767,20 @@ class TestFirewallRestore:
             d.apply_config(FIREWALL_CONFIG)
         # the destructive apply must never have been sent
         assert not any(s == "cmd config-apply zynkabcdef.conf" for s in fake.sent)
+        # but the failed upload was cleaned up
+        assert "cmd config-delete zynkabcdef.conf" in fake.sent
 
     def test_apply_failure_surfaces(self, monkeypatch):
         monkeypatch.setattr("app.devices.zyxel_drivers.os.urandom", lambda n: b"\xab\xcd\xef")
-        monkeypatch.setattr(
-            "app.devices.zyxel_drivers.sftp_upload_dedicated",
-            lambda *a, **kw: None,
-        )
+        self._ftp_ok(monkeypatch)
         d = make_fake_driver("firewall", {}, "usgflex700h> ")
         fake = self.FirewallFake()
         fake.responses = {
-            "cmd config-apply option dry-run zynkabcdef.conf": self.APPLY_OK,
+            "cmd config-apply zynkabcdef.conf option dry-run": self.APPLY_OK,
             "cmd config-apply zynkabcdef.conf": (
                 "configuration-apply\r\n    error\r\n        message file not found\r\n"
             ),
+            "cmd config-delete zynkabcdef.conf": self.APPLY_OK,
         }
         d._make_transport = lambda: fake
         d.connect()

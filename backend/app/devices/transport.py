@@ -124,42 +124,8 @@ def _scp_expect_ok(chan) -> None:
     if chan.recv_stderr_ready():
         stderr = chan.recv_stderr(4096)
     raise DriverError(
-        "SCP handshake failed"
-        + (f": {stderr.decode(errors='replace').strip()}" if stderr else "")
+        "SCP handshake failed" + (f": {stderr.decode(errors='replace').strip()}" if stderr else "")
     )
-
-
-def ftp_upload(
-    host: str,
-    user: str,
-    password: str,
-    remote_path: str,
-    data: bytes,
-    passive: bool = False,
-    timeout: float = 30.0,
-) -> None:
-    """Upload bytes via FTP (binary mode). Raises on any failure.
-
-    `passive=False` (active/PORT mode) matches the examples in Zyxel's CLI
-    guides; embedded FTP servers behind NAT often break passive mode.
-    """
-    import ftplib
-    import io
-
-    ftp = ftplib.FTP(timeout=timeout)
-    try:
-        ftp.connect(host, 21)
-        ftp.login(user, password)
-        ftp.set_pasv(passive)
-        ftp.storbinary(f"STOR {remote_path}", io.BytesIO(data))
-    finally:
-        try:
-            ftp.quit()
-        except Exception:  # noqa: BLE001 - best-effort close on error paths
-            try:
-                ftp.close()
-            except Exception:  # noqa: BLE001
-                pass
 
 
 class DriverError(Exception):

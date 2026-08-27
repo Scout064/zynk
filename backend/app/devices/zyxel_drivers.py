@@ -20,7 +20,6 @@ from app.devices.transport import (
     OperationFailedError,
     TimeoutError_,
     UnreachableError,
-    ftp_upload,
     scp_upload_dedicated,
     sftp_upload_dedicated,
 )
@@ -305,6 +304,35 @@ class ZyxelSwitchDriver(ZyxelDriver):
         )
 
 
+def tree_config_to_cli_script(text: str) -> str:
+    """Convert uOS `show config running` tree output to CLI script syntax.
+
+    Real-device finding: `cmd config-apply` IGNORES every line of the
+    indented tree format (the device's apply-config-error.log shows
+    '[stage 1] Ignore' for each line). It expects flat script syntax —
+    guide §38.5 rules: each statement is '/ ' + absolute path; '..' closes
+    one level. Verified end-to-end on a USG FLEX 700H: the converted config
+    passes `cmd config-apply <file> option dry-run` with ok/message OK.
+    """
+    out: list[str] = []
+    path: list[str] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        stmt = line.strip()
+        if stmt == "..":
+            if path:
+                path.pop()
+            continue
+        depth = indent // 4
+        path = path[:depth]
+        out.append("/ " + " ".join(path + [stmt]))
+        path.append(stmt)
+    return "\n".join(out) + "\n"
+
+
 class ZyxelFirewallDriver(ZyxelDriver):
     """USG FLEX 700H (uOS CLI).
 
@@ -356,18 +384,44 @@ class ZyxelFirewallDriver(ZyxelDriver):
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         self.base_prompt = lines[-1] if lines else self.base_prompt
 
-    def _upload_snapshot(self, remote_path: str, config_text: str) -> str:
-        """Upload the snapshot to /conf/, trying SFTP -> SCP -> FTP.
+    def _upload_snapshot(self, remote_name: str, config_text: str) -> str:
+        """Upload the snapshot into the device's /conf directory.
 
-        Real-device finding (USG FLEX H): opening SFTP alongside the active
-        shell channel can yield 'Garbage packet received'; some firmwares
-        don't support the SFTP subsystem at all. The dedicated-connection
-        attempts avoid the channel-multiplexing issue; FTP is the documented
-        uOS file-upload service (used for firmware uploads) as last resort.
+        Real-device findings (USG FLEX H, verified end-to-end):
+        - /conf is WRITE-PROTECTED over FTP (STOR -> 550); /tmp is writable
+        - absolute-path STOR ("STOR /conf/x" / "STOR conf/x") stalls the
+          server; cwd + bare filename works
+        - FTP RNFR/RNTO CAN move a file /tmp -> conf/ (verified)
+        - SFTP over SSH answers 'Garbage packet received'; exec-channel SCP
+          is intercepted by the nc-cli wrapper -> both unusable on uOS
+        Because extra failed SSH connections can trip the device's SSH
+        brute-force protection, FTP (documented, verified) is tried FIRST;
+        SFTP/SCP (on dedicated connections) are only fallbacks.
 
-        Returns which transport succeeded ("sftp" / "scp" / "ftp").
+        Returns which transport succeeded ("ftp" / "sftp" / "scp").
         """
+        import ftplib
+        import io
+        import time as _time
+
+        tmp_name = "up_" + remote_name
+        data = config_text.encode("utf-8")
         errors: list[str] = []
+        try:
+            ftp = ftplib.FTP(timeout=60)
+            ftp.connect(self.spec.host, 21)
+            ftp.login(self.spec.username, self.spec.password)
+            ftp.set_pasv(True)  # verified working; active mode fails (425)
+            ftp.cwd("tmp")
+            ftp.storbinary(f"STOR {tmp_name}", io.BytesIO(data))
+            _time.sleep(1.0)  # server needs a moment before the rename (observed)
+            # verified pattern: bare source name (cwd=/tmp) + absolute destination
+            ftp.rename(tmp_name, f"/conf/{remote_name}")
+            ftp.quit()
+            return "ftp"
+        except (*ftplib.all_errors, OSError) as err:
+            errors.append(f"ftp: {err}")
+
         for method in ("sftp", "scp"):
             fn = sftp_upload_dedicated if method == "sftp" else scp_upload_dedicated
             try:
@@ -376,42 +430,28 @@ class ZyxelFirewallDriver(ZyxelDriver):
                     self.spec.port,
                     self.spec.username,
                     self.spec.password,
-                    remote_path,
-                    config_text.encode("utf-8"),
+                    f"/conf/{remote_name}",
+                    data,
                 )
                 return method
             except DriverError as err:
                 errors.append(f"{method}: {err}")
             except Exception as err:  # paramiko garbage packets etc.
                 errors.append(f"{method}: {err.__class__.__name__}: {err}")
-        # FTP fallback — the documented uOS file-upload service. The CLI
-        # guide's own FTP example uses ACTIVE mode (PORT); many embedded FTP
-        # servers sit behind NAT/firewalls that break passive data channels,
-        # so try active first, then passive.
-        for pasv in (False, True):
-            try:
-                ftp_upload(
-                    host=self.spec.host,
-                    user=self.spec.username,
-                    password=self.spec.password,
-                    remote_path=remote_path,
-                    data=config_text.encode("utf-8"),
-                    passive=pasv,
-                )
-                return "ftp" + (" (passive)" if pasv else " (active)")
-            except Exception as err:
-                errors.append(f"ftp {'passive' if pasv else 'active'}: {err}")
         raise OperationFailedError(
             "Could not upload the config to the firewall — all transfer methods "
-            f"failed ({'; '.join(errors)}). If SFTP/SCP are not available on this "
-            "firmware, enable the FTP server on the device and retry: "
-            "'vrf main ftp-server enabled true' + 'commit' (disable again "
-            "afterwards if desired)."
+            f"failed ({'; '.join(errors)}). The verified path is FTP: enable the "
+            "device's FTP server ('vrf main ftp-server enabled true' + 'commit') "
+            "and retry. FTP uploads go through /tmp and are moved into /conf by "
+            "the server (direct /conf writes are blocked by the firmware)."
         )
 
     def apply_config(self, config_text: str) -> str:
-        """Restore a snapshot: upload + dry-run validation + config-apply.
+        """Restore a snapshot: convert to CLI script, upload, dry-run, apply.
 
+        The stored snapshot is the tree format of `show config running`;
+        `cmd config-apply` requires flat CLI script syntax, so it is
+        converted first (tree_config_to_cli_script, hardware-verified).
         Applies immediately without a reboot; the post-revert confirmation
         pull in the backup service verifies the applied state.
         """
@@ -419,22 +459,32 @@ class ZyxelFirewallDriver(ZyxelDriver):
 
         # /conf/ file name: <=76 chars, must end with .conf (guide constraints)
         name = f"zynk{os.urandom(3).hex()}.conf"
-        remote = f"/conf/{name}"
+        script = tree_config_to_cli_script(config_text)
 
         self._ensure_running_config_mode()
-        method = self._upload_snapshot(remote, config_text)
+        method = self._upload_snapshot(name, script)
         log.info("firewall restore %s: uploaded via %s", self.spec.host, method)
 
         # Pre-flight: validate the file without applying it.
-        dry = self.run(f"cmd config-apply option dry-run {name}", timeout=180)
-        if self.APPLY_ERROR_RE.search(dry) and "ok" not in dry.lower():
+        # (Syntax verified on device: the file name comes BEFORE 'option'.)
+        dry = self.run(f"cmd config-apply {name} option dry-run", timeout=180)
+        if "ok" not in dry.lower() or self.APPLY_ERROR_RE.search(dry):
+            self._cleanup_remote(name)
             raise OperationFailedError(f"Firewall rejected the config (dry-run): {dry.strip()!r}")
 
         out = self.run(f"cmd config-apply {name}", timeout=300)
+        self._cleanup_remote(name)
         lowered = out.lower()
         if "ok" not in lowered or self.APPLY_ERROR_RE.search(out):
             raise OperationFailedError(f"Firewall config-apply failed: {out.strip()!r}")
         return out
+
+    def _cleanup_remote(self, name: str) -> None:
+        """Best-effort removal of the uploaded restore file from /conf."""
+        try:
+            self.run(f"cmd config-delete {name}", timeout=30)
+        except DriverError:
+            pass
 
 
 class ZyxelZLDFirewallDriver(ZyxelDriver):

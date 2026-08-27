@@ -24,8 +24,8 @@ SSH sessions; verify against your real hardware before relying on it.
 
 | Family | Models (verified against guide) | Config pull | Revert |
 |---|---|---|---|
-| Switch | All ZyNOS and FaOS based Switches | `show running-config` | yes — TFTP + `copy tftp config` + `reload config` (device reboots) UNTESTED |
-| Firewall (uOS) | All uOS based | `show config running \| no-pager` NEEDS REWORK, CLI OUTPUT NOT IN CORRECT SYNTAX FOR REVERT | Currently in Rework, found workaround to get the config to the correct folder via ftp, but needs check. (Not yet completely Implemented in this Codes Version) |
+| Switch | All ZyNOS and FaOS based Switches | `show running-config` | yes — TFTP + `copy tftp config` + `reload config` (device reboots); not yet verified on full-CLI hardware |
+| Firewall (uOS) | All uOS based | `show config running \| no-pager` | yes — snapshot is converted to CLI script syntax, uploaded via FTP (`/tmp` → rename to `conf/`), validated with `dry-run`, then `cmd config-apply` (no reboot); conversion + upload + dry-run verified on hardware, final apply pending |
 | Firewall (ZLD) | All ZLD based (ATP & USG ZyWALL) | `show running-config` | yes — FTP upload + `apply /conf/<file> ignore-error rollback` + `write` |
 | Access Point | ZyNOS based | `show running-config` | yes — FTP upload + `apply running-config ... ignore error rollback` + `write` |
 
